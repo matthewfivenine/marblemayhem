@@ -1134,48 +1134,62 @@ function hide(id){document.getElementById(id).style.display='none';}
 // =============================================================================
 //  TRACKBALL + KEYBOARD
 // =============================================================================
-let tbDX=0,tbDY=0,tbActive=false,tbStartX=0,tbStartY=0;
-// Whole-screen trackpad: drag anywhere to move the ball
-// Mouse/touch: drag anywhere on screen. Delta from press point maps to world axes.
-// Isometric mapping: screen-right = world +x/-y diagonal, screen-down = world +x/+y diagonal
-// Simplified: map screen X drag → world X axis, screen Y drag → world Y axis
-// (player sees it as: drag right = roll right, drag down = roll toward camera)
-function screenToWorld(sdx, sdy) {
-  // Invert iso: screen dx = (wx-wy)*TW/2, screen dy = (wx+wy)*TH/2
-  // wx = sdx/TW + sdy/TH,  wy = -sdx/TW + sdy/TH
-  const wx = sdx/TW + sdy/TH;
-  const wy = -sdx/TW + sdy/TH;
-  return {wx, wy};
+let tbDX=0,tbDY=0,tbActive=false;
+let tbPrevX=0,tbPrevY=0,tbCurX=0,tbCurY=0;
+
+// Convert raw screen drag delta into world-space input axes.
+// Iso projection: screenX = (wx-wy)*TW/2, screenY = (wx+wy)*TH/2
+// Invert: wx = sdx/TW + sdy/TH,  wy = -sdx/TW + sdy/TH
+// BUT this is non-intuitive for players. Instead map directly:
+//   screen right (+sdx) → move ball right-forward in iso = +wx, -wy
+//   screen down  (+sdy) → move ball forward-left in iso  = +wx, +wy
+//   diagonal works naturally as combination of both
+function applyDrag(sdx, sdy) {
+  // Scale: pixels per unit of full input. Small value = very sensitive.
+  const SENS = 18; // pixels of drag = full speed (was requiring 100+ before)
+  // Iso-correct mapping: right on screen = +gx/-gy world, down = +gx/+gy world
+  const rawX = sdx / SENS;  // screen-right contribution
+  const rawY = sdy / SENS;  // screen-down contribution
+  // World axes: wx = right+down, wy = down-right
+  let wx = rawX + rawY;
+  let wy = rawY - rawX;
+  // Normalize so diagonal doesn't go faster, then clamp to [-1,1]
+  const mag = Math.sqrt(wx*wx + wy*wy);
+  if(mag > 1){ wx /= mag; wy /= mag; }
+  tbDX = wx;
+  tbDY = wy;
 }
+
+// Mouse
 canvas.addEventListener('mousedown', e => {
-  tbActive=true; tbStartX=e.clientX; tbStartY=e.clientY; tbDX=0; tbDY=0; e.preventDefault();
+  tbActive=true; tbPrevX=e.clientX; tbPrevY=e.clientY;
+  tbCurX=e.clientX; tbCurY=e.clientY; tbDX=0; tbDY=0; e.preventDefault();
 }, {passive:false});
 window.addEventListener('mousemove', e => {
   if(!tbActive) return;
-  const sdx = e.clientX - tbStartX;
-  const sdy = e.clientY - tbStartY;
-  const {wx,wy} = screenToWorld(sdx, sdy);
-  const mag = Math.sqrt(wx*wx+wy*wy);
-  const cap = 2.5;
-  tbDX = Math.max(-1, Math.min(1, wx/cap));
-  tbDY = Math.max(-1, Math.min(1, wy/cap));
+  tbCurX=e.clientX; tbCurY=e.clientY;
+  applyDrag(tbCurX-tbPrevX, tbCurY-tbPrevY);
 });
 window.addEventListener('mouseup', () => { tbActive=false; tbDX=0; tbDY=0; });
+
+// Touch — use velocity delta between frames for maximum responsiveness
 canvas.addEventListener('touchstart', e => {
   e.preventDefault();
-  const t = e.touches[0];
-  tbActive=true; tbStartX=t.clientX; tbStartY=t.clientY; tbDX=0; tbDY=0;
+  const t=e.touches[0];
+  tbActive=true;
+  tbPrevX=t.clientX; tbPrevY=t.clientY;
+  tbCurX=t.clientX; tbCurY=t.clientY;
+  tbDX=0; tbDY=0;
 }, {passive:false});
 canvas.addEventListener('touchmove', e => {
   e.preventDefault();
-  if(!tbActive) return;
-  const t = e.touches[0];
-  const sdx = t.clientX - tbStartX;
-  const sdy = t.clientY - tbStartY;
-  const {wx,wy} = screenToWorld(sdx, sdy);
-  const cap = 0.9; // smaller cap = less drag needed for full speed on mobile
-  tbDX = Math.max(-1, Math.min(1, wx/cap));
-  tbDY = Math.max(-1, Math.min(1, wy/cap));
+  if(!tbActive||!e.touches.length) return;
+  const t=e.touches[0];
+  tbCurX=t.clientX; tbCurY=t.clientY;
+  applyDrag(tbCurX-tbPrevX, tbCurY-tbPrevY);
+  // Update prev each frame so it tracks ongoing movement, not just from touch-start
+  // This means any movement registers immediately — no dead zone from start position
+  tbPrevX=tbCurX; tbPrevY=tbCurY;
 }, {passive:false});
 canvas.addEventListener('touchend', () => { tbActive=false; tbDX=0; tbDY=0; });
 const keys={};
