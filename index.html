@@ -1173,7 +1173,7 @@ canvas.addEventListener('touchmove', e => {
   const sdx = t.clientX - tbStartX;
   const sdy = t.clientY - tbStartY;
   const {wx,wy} = screenToWorld(sdx, sdy);
-  const cap = 2.5;
+  const cap = 0.9; // smaller cap = less drag needed for full speed on mobile
   tbDX = Math.max(-1, Math.min(1, wx/cap));
   tbDY = Math.max(-1, Math.min(1, wy/cap));
 }, {passive:false});
