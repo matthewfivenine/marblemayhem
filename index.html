@@ -900,10 +900,10 @@ function physStep(dt){
   const inputScale=iceLevel?2.0:3.0;
   const friction=iceLevel?0.975:0.875;
   // tbDX/tbDY are already in world space (see input section below)
-  player.vx+=tbDX*dt*inputScale*5.0;
-  player.vy+=tbDY*dt*inputScale*5.0;
+  player.vx+=tbDX*dt*inputScale*14.0;
+  player.vy+=tbDY*dt*inputScale*14.0;
   const spd=Math.sqrt(player.vx**2+player.vy**2);
-  const ms=iceLevel?8:6;
+  const ms=iceLevel?12:10;
   if(spd>ms){player.vx*=ms/spd;player.vy*=ms/spd;}
   player.vx*=friction; player.vy*=friction;
   player.vz-=22*dt;
@@ -1146,7 +1146,7 @@ let tbPrevX=0,tbPrevY=0,tbCurX=0,tbCurY=0;
 //   diagonal works naturally as combination of both
 function applyDrag(sdx, sdy) {
   // Scale: pixels per unit of full input. Small value = very sensitive.
-  const SENS = 18; // pixels of drag = full speed (was requiring 100+ before)
+  const SENS = 4; // pixels per frame of finger movement = full speed on mobile
   // Iso-correct mapping: right on screen = +gx/-gy world, down = +gx/+gy world
   const rawX = sdx / SENS;  // screen-right contribution
   const rawY = sdy / SENS;  // screen-down contribution
