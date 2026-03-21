@@ -197,454 +197,424 @@ function drawMarble(sx,sy,r,c1,c2,glow,roll){
 }
 
 // =============================================================================
-//  LEVEL DEFINITIONS
-//  Geometry matches Marble Madness: vertical scrolling, narrow bridges,
-//  wide platform → thin strip → ramp → platform chains
+//  LEVEL DEFINITIONS — each level has unique color theme, longer/harder as they go
 // =============================================================================
-const LEVEL_NAMES=['BEGINNER\'S LUCK','THE DESCENT','CHECKERED MAZE',
-  'ICE WORLD','RED LABYRINTH','GOLDEN PEAKS','PURPLE HAZE',
-  'DARK ABYSS','THE GAUNTLET','FINAL CHAOS'];
-const LEVEL_TIMES=[62,58,56,52,50,46,44,40,36,33];
+const LEVEL_NAMES=['BEGINNER\'S LUCK','THE DESCENT','FROZEN FALLS',
+  'RED CANYON','GOLDEN LABYRINTH','PURPLE STORM',
+  'DARK CROSSING','THE GAUNTLET','CHAOS FACTORY','FINAL DESCENT'];
+const LEVEL_TIMES=[70,65,62,58,55,52,48,44,40,36];
 
-function R(x,y,z,len,t){ const a=[]; for(let i=0;i<len;i++) a.push([x+i,y,z,t]); return a; }
-function C(x,y,z,len,t){ const a=[]; for(let i=0;i<len;i++) a.push([x,y+i,z,t]); return a; }
-function B(x,y,z,w,h,t){ const a=[]; for(let dx=0;dx<w;dx++) for(let dy=0;dy<h;dy++) a.push([x+dx,y+dy,z,t]); return a; }
-// Descending ramp along Y: each step y+1 = z-1
-function RampY(x,y,z,len,w,t){ const a=[]; for(let i=0;i<len;i++) for(let j=0;j<w;j++) a.push([x+j,y+i,z-i,t]); return a; }
-// Descending ramp along X: each step x+1 = z-1
-function RampX(x,y,z,len,h,t){ const a=[]; for(let i=0;i<len;i++) for(let j=0;j<h;j++) a.push([x+i,y+j,z-i,t]); return a; }
+function R(x,y,z,len,t){const a=[];for(let i=0;i<len;i++)a.push([x+i,y,z,t]);return a;}
+function C(x,y,z,len,t){const a=[];for(let i=0;i<len;i++)a.push([x,y+i,z,t]);return a;}
+function B(x,y,z,w,h,t){const a=[];for(let dx=0;dx<w;dx++)for(let dy=0;dy<h;dy++)a.push([x+dx,y+dy,z,t]);return a;}
+function RampY(x,y,z,len,w,t){const a=[];for(let i=0;i<len;i++)for(let j=0;j<w;j++)a.push([x+j,y+i,z-i,t]);return a;}
+function RampX(x,y,z,len,h,t){const a=[];for(let i=0;i<len;i++)for(let j=0;j<h;j++)a.push([x+i,y+j,z-i,t]);return a;}
 
-// ── Level 1 ─ Beginner's Luck ─────────────────────────────────────────────
+// ── Level 1 ─ BEGINNER'S LUCK — grey, simple intro ────────────────────────
 function L1(){
-  const tiles=[
-    ...B(-2,0,0,5,4,'start'),          // wide start pad
-    ...RampY(-1,4,0,5,3,'normal'),     // 3-wide ramp descends 5 steps
-    ...B(-1,9,-4,5,3,'normal'),        // mid platform
-    ...C(1,12,-4,7,'normal'),          // narrow 1-wide bridge
-    ...B(0,19,-4,3,3,'normal'),        // small platform
-    ...RampY(0,22,-4,4,2,'normal'),    // 2-wide ramp
-    ...B(-1,26,-7,5,3,'normal'),       // platform
-    ...C(1,29,-7,6,'normal'),          // 1-wide bridge
-    ...B(0,35,-7,3,2,'normal'),        // tiny platform
-    ...RampY(-1,37,-7,4,3,'normal'),   // ramp
-    ...B(-1,41,-10,5,4,'goal'),        // goal
-  ];
+  const T='normal';
   return {
-    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:1,gy:42,gz:-10},
+    tiles:[
+      ...B(-2,0,0,5,4,'start'),
+      ...RampY(-1,4,0,5,3,T),
+      ...B(-1,9,-4,5,3,T),
+      ...C(1,12,-4,7,T),
+      ...B(0,19,-4,3,3,T),
+      ...RampY(0,22,-4,4,2,T),
+      ...B(-1,26,-7,5,3,T),
+      ...C(1,29,-7,6,T),
+      ...B(0,35,-7,3,2,T),
+      ...RampY(-1,37,-7,4,3,T),
+      ...B(-1,41,-10,5,4,'goal'),
+    ],
+    start:{gx:0,gy:1,gz:0}, goal:{gx:1,gy:42,gz:-10},
     enemies:[
       {type:'rollerball',gx:0,gy:10,gz:-4,small:true,path:[{gx:-1,gy:10,gz:-4},{gx:3,gy:10,gz:-4}]},
       {type:'rollerball',gx:2,gy:11,gz:-4,small:true,path:[{gx:-1,gy:11,gz:-4},{gx:3,gy:11,gz:-4}]},
       {type:'inchworm',gx:1,gy:15,gz:-4,path:[{gx:1,gy:13,gz:-4},{gx:1,gy:18,gz:-4}]},
-      {type:'bouncer',gx:1,gy:21,gz:-4,path:[{gx:0,gy:20,gz:-4},{gx:2,gy:20,gz:-4}]},
+      {type:'rotatosquare',gx:1,gy:21,gz:-4,path:[{gx:0,gy:20,gz:-4},{gx:2,gy:22,gz:-4}]},
     ]
   };
 }
 
-// ── Level 2 ─ The Descent ─────────────────────────────────────────────────
+// ── Level 2 ─ THE DESCENT — blue theme, zigzag maze, longer ───────────────
 function L2(){
-  const tiles=[
-    ...B(-2,0,0,5,3,'normal'),
-    // Narrow 2-wide straight down
-    ...C(0,3,0,5,'normal'), ...C(1,3,0,5,'normal'),
-    // Right turn
-    ...R(2,7,0,5,'normal'), ...R(2,8,0,5,'normal'),
-    // Down again
-    ...C(6,9,0,5,'normal'), ...C(7,9,0,5,'normal'),
-    // Left turn - ramp
-    ...RampX(4,13,0,5,2,'normal'),
-    // Platform
-    ...B(-1,13,-4,5,3,'normal'),
-    // 1-wide bridge heading down
-    ...C(0,16,-4,8,'normal'),
-    // Left-turn platform
-    ...B(-4,24,-4,5,3,'normal'),
-    // Zigzag: right along x
-    ...R(-4,27,-4,7,'normal'),
-    // Down again narrow
-    ...C(2,27,-4,8,'normal'), ...C(3,27,-4,8,'normal'),
-    // Platform
-    ...B(1,35,-4,5,3,'normal'),
-    // Ramp
-    ...RampY(1,38,-4,5,3,'normal'),
-    // Goal
-    ...B(0,43,-8,5,4,'goal'),
-  ];
+  const T='blue';
   return {
-    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:2,gy:44,gz:-8},
+    tiles:[
+      ...B(-2,0,0,5,4,T),
+      ...C(0,4,0,6,T),...C(1,4,0,6,T),
+      ...R(2,9,0,6,T),...R(2,10,0,6,T),
+      ...C(7,10,0,7,T),...C(8,10,0,7,T),
+      ...R(1,16,0,7,T),...R(1,17,0,7,T),
+      ...C(1,17,0,8,T),...C(0,17,0,8,T),
+      ...B(-1,25,0,4,3,T),
+      ...RampY(-1,28,0,6,3,T),
+      ...C(0,34,-5,9,T),
+      ...B(-2,43,-5,5,3,T),
+      ...R(-2,46,-5,8,T),...R(-2,47,-5,8,T),
+      ...C(5,47,-5,8,T),
+      ...B(4,55,-5,4,3,T),
+      ...RampY(4,58,-5,5,3,T),
+      ...C(5,63,-9,6,T),
+      ...B(3,69,-9,5,4,'goal'),
+    ],
+    start:{gx:0,gy:1,gz:0}, goal:{gx:4,gy:70,gz:-9},
     enemies:[
-      {type:'rollerball',gx:0,gy:4,gz:0,small:true,path:[{gx:0,gy:3,gz:0},{gx:0,gy:7,gz:0}]},
-      {type:'rollerball',gx:1,gy:5,gz:0,small:true,path:[{gx:1,gy:3,gz:0},{gx:1,gy:7,gz:0}]},
-      {type:'crab',gx:3,gy:10,gz:0,path:[{gx:2,gy:9,gz:0},{gx:6,gy:9,gz:0}]},
-      {type:'slinky',gx:6,gy:12,gz:0,path:[{gx:6,gy:9,gz:0},{gx:7,gy:13,gz:0}]},
-      {type:'inchworm',gx:0,gy:20,gz:-4,path:[{gx:0,gy:17,gz:-4},{gx:0,gy:23,gz:-4}]},
-      {type:'ghost',gx:-2,gy:26,gz:-4,path:[{gx:-4,gy:26,gz:-4},{gx:0,gy:26,gz:-4}]},
-      {type:'zigzagger',gx:2,gy:31,gz:-4,path:[{gx:1,gy:28,gz:-4},{gx:3,gy:34,gz:-4}]},
+      {type:'rollerball',gx:0,gy:5,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:1,gy:9,gz:0}]},
+      {type:'rollerball',gx:1,gy:7,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:1,gy:9,gz:0}]},
+      {type:'crab',gx:5,gy:11,gz:0,path:[{gx:2,gy:10,gz:0},{gx:7,gy:11,gz:0}]},
+      {type:'rotatosquare',gx:4,gy:14,gz:0,path:[{gx:1,gy:13,gz:0},{gx:7,gy:16,gz:0}]},
+      {type:'inchworm',gx:3,gy:19,gz:0,path:[{gx:1,gy:17,gz:0},{gx:7,gy:17,gz:0}]},
+      {type:'skullhead',gx:0,gy:36,gz:-5,path:[{gx:0,gy:34,gz:-5},{gx:0,gy:42,gz:-5}]},
+      {type:'rotatosquare',gx:1,gy:49,gz:-5,path:[{gx:-2,gy:47,gz:-5},{gx:4,gy:47,gz:-5}]},
+      {type:'ghost',gx:5,gy:52,gz:-5,path:[{gx:4,gy:47,gz:-5},{gx:7,gy:54,gz:-5}]},
     ]
   };
 }
 
-// ── Level 3 ─ Checkered Maze ─────────────────────────────────────────────
+// ── Level 3 ─ FROZEN FALLS — ice theme, slippery ramps, long bridges ──────
 function L3(){
-  const t='checker';
-  const tiles=[
-    ...B(-2,0,0,5,3,t),
-    // Corridor 2-wide heading down
-    ...C(-1,3,0,6,t), ...C(0,3,0,6,t),
-    // Wide platform
-    ...B(-2,9,0,5,3,t),
-    // RIGHT narrow 1-wide
-    ...C(2,12,0,7,t),
-    // Platform
-    ...B(1,19,0,4,3,t),
-    // LEFT turn 1-wide
-    ...C(-1,22,0,7,t),
-    // Platform
-    ...B(-3,29,0,5,3,t),
-    // Ramp descend
-    ...RampY(-2,32,0,6,3,t),
-    // 1-wide bridge
-    ...C(0,38,-5,8,t),
-    // Platform
-    ...B(-1,46,-5,4,3,t),
-    // Ramp
-    ...RampY(-1,49,-5,4,3,t),
-    // Goal
-    ...B(-2,53,-8,5,4,'goal'),
-  ];
+  const T='ice';
   return {
-    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:0,gy:54,gz:-8},
+    tiles:[
+      ...B(-3,0,0,7,4,T),
+      ...C(0,4,0,7,T),
+      ...B(-2,11,0,5,3,T),
+      ...RampY(-2,14,0,8,5,T),
+      ...R(-8,22,-7,9,T),...R(-8,23,-7,9,T),
+      ...B(-10,24,-7,4,4,T),
+      ...C(-9,28,-7,8,T),...C(-8,28,-7,8,T),
+      ...B(-10,36,-7,5,3,T),
+      ...RampY(-10,39,-7,6,4,T),
+      ...C(-8,45,-12,8,T),
+      ...B(-10,53,-12,5,3,T),
+      ...R(-10,56,-12,9,T),
+      ...C(-2,56,-12,7,T),
+      ...B(-3,63,-12,5,4,'goal'),
+    ],
+    start:{gx:0,gy:1,gz:0}, goal:{gx:-2,gy:64,gz:-12}, icePhysics:true,
     enemies:[
-      {type:'rollerball',gx:-1,gy:4,gz:0,small:true,path:[{gx:-1,gy:3,gz:0},{gx:-1,gy:8,gz:0}]},
-      {type:'rollerball',gx:0,gy:6,gz:0,small:true,path:[{gx:0,gy:3,gz:0},{gx:0,gy:8,gz:0}]},
-      {type:'spinner',gx:0,gy:11,gz:0,path:[{gx:-2,gy:10,gz:0},{gx:2,gy:11,gz:0}]},
-      {type:'zigzagger',gx:2,gy:15,gz:0,path:[{gx:2,gy:13,gz:0},{gx:2,gy:18,gz:0}]},
-      {type:'bouncer',gx:-1,gy:31,gz:0,path:[{gx:-3,gy:30,gz:0},{gx:1,gy:31,gz:0}]},
-      {type:'ghost',gx:0,gy:42,gz:-5,path:[{gx:0,gy:38,gz:-5},{gx:0,gy:45,gz:-5}]},
-      {type:'crab',gx:0,gy:48,gz:-5,path:[{gx:-1,gy:47,gz:-5},{gx:2,gy:48,gz:-5}]},
+      {type:'iceball',gx:0,gy:6,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:0,gy:10,gz:0}]},
+      {type:'iceball',gx:-2,gy:13,gz:0,small:true,path:[{gx:-2,gy:12,gz:0},{gx:2,gy:13,gz:0}]},
+      {type:'rotatosquare',gx:-4,gy:17,gz:-2,path:[{gx:-2,gy:15,gz:-1},{gx:-1,gy:21,gz:-6}]},
+      {type:'iceball',gx:-5,gy:24,gz:-7,small:true,path:[{gx:-8,gy:23,gz:-7},{gx:-1,gy:23,gz:-7}]},
+      {type:'slinky',gx:-9,gy:31,gz:-7,path:[{gx:-10,gy:28,gz:-7},{gx:-8,gy:35,gz:-7}]},
+      {type:'skullhead',gx:-9,gy:40,gz:-7,path:[{gx:-10,gy:39,gz:-7},{gx:-8,gy:44,gz:-7}]},
+      {type:'rotatosquare',gx:-8,gy:48,gz:-12,path:[{gx:-8,gy:45,gz:-12},{gx:-8,gy:52,gz:-12}]},
+      {type:'crab',gx:-5,gy:58,gz:-12,path:[{gx:-10,gy:56,gz:-12},{gx:-2,gy:56,gz:-12}]},
     ]
   };
 }
 
-// ── Level 4 ─ Ice World ───────────────────────────────────────────────────
+// ── Level 4 ─ RED CANYON — red/yellow, wide then very narrow, lots of turns
 function L4(){
-  const i='ice';
-  const tiles=[
-    ...B(-3,0,0,7,4,i),
-    // 1-wide bridge
-    ...C(0,4,0,6,i),
-    // Platform
-    ...B(-2,10,0,5,3,i),
-    // Wide ramp
-    ...RampY(-2,13,0,7,5,i),
-    // Thin 2-wide bridge going left
-    ...R(-8,20,-6,8,i), ...R(-8,21,-6,8,i),
-    // Platform
-    ...B(-10,22,-6,4,4,i),
-    // Ramp heading left+down  (manual diagonal)
-    [-10,26,-6,i],[-11,27,-7,i],[-12,28,-8,i],
-    [-10,26,-6,i],[-11,26,-6,i],
-    [-11,27,-7,i],[-12,27,-7,i],
-    [-12,28,-8,i],[-13,28,-8,i],
-    // Platform
-    ...B(-14,29,-8,5,4,i),
-    // 1-wide bridge
-    ...C(-12,33,-8,7,i),
-    // Turn right
-    ...R(-12,40,-8,6,i), ...R(-12,41,-8,6,i),
-    // Ramp
-    ...RampY(-7,42,-8,5,3,i),
-    // Goal
-    ...B(-8,47,-12,5,4,'goal'),
-  ];
+  const tiles=[];
+  const rd=(x,y,z)=>tiles.push([x,y,z,'red']);
+  const yw=(x,y,z)=>tiles.push([x,y,z,'yellow']);
+  // Start pad
+  for(let x=-2;x<=3;x++)for(let y=0;y<4;y++)tiles.push([x,y,0,'red']);
+  // Zigzag corridors — red+yellow alternating
+  for(let y=4;y<11;y++){rd(0,y,0);yw(1,y,0);}
+  for(let x=1;x<=8;x++){yw(x,11,0);rd(x,12,0);}
+  for(let y=12;y<20;y++){rd(8,y,0);yw(9,y,0);}
+  for(let x=9;x>=2;x--){yw(x,20,0);rd(x,21,0);}
+  for(let y=21;y<28;y++){rd(2,y,0);yw(3,y,0);}
+  // Wide platform
+  for(let x=1;x<=6;x++)for(let y=28;y<31;y++)tiles.push([x,y,0,'red']);
+  // Ramp down
+  for(let s=0;s<6;s++)for(let j=0;j<3;j++)tiles.push([2+j,31+s,-s,'red']);
+  // 2-wide bridge
+  for(let y=37;y<46;y++){rd(3,y,-5);yw(4,y,-5);}
+  // Platform
+  for(let x=1;x<=6;x++)for(let y=46;y<49;y++)tiles.push([x,y,-5,'yellow']);
+  // 1-wide bridge
+  for(let y=49;y<58;y++)tiles.push([3,y,-5,'red']);
+  // Ramp
+  for(let s=0;s<5;s++)for(let j=0;j<3;j++)tiles.push([2+j,58+s,-5-s,'red']);
+  // Goal
+  for(let x=1;x<=6;x++)for(let y=63;y<67;y++)tiles.push([x,y,-9,'goal']);
   return {
-    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:-6,gy:48,gz:-12}, icePhysics:true,
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:3,gy:64,gz:-9},
     enemies:[
-      {type:'iceball',gx:0,gy:6,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:0,gy:9,gz:0}]},
-      {type:'iceball',gx:-3,gy:12,gz:0,small:true,path:[{gx:-2,gy:11,gz:0},{gx:2,gy:12,gz:0}]},
-      {type:'iceball',gx:-5,gy:22,gz:-6,small:true,path:[{gx:-8,gy:21,gz:-6},{gx:-1,gy:21,gz:-6}]},
-      {type:'bouncer',gx:-11,gy:25,gz:-6,path:[{gx:-10,gy:23,gz:-6},{gx:-7,gy:25,gz:-6}]},
-      {type:'slinky',gx:-12,gy:36,gz:-8,path:[{gx:-12,gy:33,gz:-8},{gx:-12,gy:39,gz:-8}]},
-      {type:'firefly',gx:-9,gy:44,gz:-8,path:[{gx:-12,gy:43,gz:-8},{gx:-7,gy:44,gz:-8}]},
+      {type:'rollerball',gx:0,gy:5,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:1,gy:10,gz:0}]},
+      {type:'rollerball',gx:1,gy:7,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:1,gy:10,gz:0}]},
+      {type:'rotatosquare',gx:5,gy:12,gz:0,path:[{gx:1,gy:11,gz:0},{gx:8,gy:12,gz:0}]},
+      {type:'crab',gx:8,gy:15,gz:0,path:[{gx:8,gy:12,gz:0},{gx:9,gy:19,gz:0}]},
+      {type:'zigzagger',gx:2,gy:23,gz:0,path:[{gx:2,gy:21,gz:0},{gx:3,gy:27,gz:0}]},
+      {type:'skullhead',gx:3,gy:29,gz:0,path:[{gx:1,gy:28,gz:0},{gx:6,gy:29,gz:0}]},
+      {type:'rotatosquare',gx:3,gy:40,gz:-5,path:[{gx:3,gy:37,gz:-5},{gx:4,gy:45,gz:-5}]},
+      {type:'ghost',gx:3,gy:52,gz:-5,path:[{gx:3,gy:49,gz:-5},{gx:3,gy:57,gz:-5}]},
+      {type:'rollerball',gx:3,gy:54,gz:-5,small:true,path:[{gx:3,gy:49,gz:-5},{gx:3,gy:57,gz:-5}]},
+      {type:'bouncer',gx:3,gy:61,gz:-6,path:[{gx:2,gy:60,gz:-6},{gx:5,gy:61,gz:-6}]},
     ]
   };
 }
 
-// ── Level 5 ─ Red Labyrinth ───────────────────────────────────────────────
+// ── Level 5 ─ GOLDEN LABYRINTH — gold, long winding maze, many enemies ────
 function L5(){
+  const T='gold';
+  return {
+    tiles:[
+      ...B(-3,0,0,7,4,T),
+      ...C(0,4,0,8,T),
+      ...B(-1,12,0,4,3,T),
+      ...C(-1,15,0,9,T),...C(0,15,0,9,T),
+      ...B(-2,24,0,5,3,T),
+      ...R(-2,27,0,9,T),...R(-2,28,0,9,T),
+      ...C(6,28,0,9,T),...C(7,28,0,9,T),
+      ...R(0,36,0,8,T),...R(0,37,0,8,T),
+      ...C(0,37,0,9,T),...C(1,37,0,9,T),
+      ...B(-1,46,0,4,3,T),
+      ...RampY(-1,49,0,7,4,T),
+      ...C(0,56,-6,10,T),
+      ...B(-2,66,-6,5,3,T),
+      ...R(-2,69,-6,8,T),
+      ...C(5,69,-6,8,T),
+      ...B(4,77,-6,4,3,T),
+      ...RampY(4,80,-6,5,3,T),
+      ...C(5,85,-10,6,T),
+      ...B(3,91,-10,5,4,'goal'),
+    ],
+    start:{gx:0,gy:1,gz:0}, goal:{gx:4,gy:92,gz:-10},
+    enemies:[
+      {type:'rollerball',gx:0,gy:6,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:0,gy:11,gz:0}]},
+      {type:'rotatosquare',gx:0,gy:14,gz:0,path:[{gx:-1,gy:12,gz:0},{gx:2,gy:14,gz:0}]},
+      {type:'crab',gx:-1,gy:18,gz:0,path:[{gx:-1,gy:15,gz:0},{gx:0,gy:23,gz:0}]},
+      {type:'spinner',gx:3,gy:27,gz:0,path:[{gx:-2,gy:27,gz:0},{gx:6,gy:27,gz:0}]},
+      {type:'rollerball',gx:6,gy:31,gz:0,small:true,path:[{gx:6,gy:28,gz:0},{gx:7,gy:36,gz:0}]},
+      {type:'skullhead',gx:3,gy:38,gz:0,path:[{gx:0,gy:37,gz:0},{gx:7,gy:38,gz:0}]},
+      {type:'rotatosquare',gx:0,gy:42,gz:0,path:[{gx:0,gy:37,gz:0},{gx:1,gy:45,gz:0}]},
+      {type:'ghost',gx:0,gy:59,gz:-6,path:[{gx:0,gy:56,gz:-6},{gx:0,gy:65,gz:-6}]},
+      {type:'zigzagger',gx:1,gy:63,gz:-6,path:[{gx:-2,gy:60,gz:-6},{gx:4,gy:65,gz:-6}]},
+      {type:'rollerball',gx:5,gy:72,gz:-6,small:true,path:[{gx:-2,gy:69,gz:-6},{gx:5,gy:69,gz:-6}]},
+      {type:'skullhead',gx:5,gy:76,gz:-6,path:[{gx:4,gy:69,gz:-6},{gx:7,gy:76,gz:-6}]},
+      {type:'rotatosquare',gx:5,gy:87,gz:-10,path:[{gx:5,gy:85,gz:-10},{gx:5,gy:90,gz:-10}]},
+    ]
+  };
+}
+
+// ── Level 6 ─ PURPLE STORM — purple, tight bridges, rotatosquare gauntlets
+function L6(){
+  const T='purple';
+  return {
+    tiles:[
+      ...B(-2,0,0,5,4,T),
+      ...RampY(-1,4,0,8,2,T),
+      ...B(-2,12,-7,5,3,T),
+      ...R(-6,13,-7,5,T),
+      ...C(-6,14,-7,9,T),...C(-5,14,-7,9,T),
+      ...B(-7,23,-7,5,3,T),
+      ...R(-7,26,-7,9,T),...R(-7,27,-7,9,T),
+      ...C(1,27,-7,9,T),
+      ...B(0,36,-7,4,3,T),
+      ...RampY(0,39,-7,7,3,T),
+      ...C(1,46,-13,10,T),
+      ...B(-1,56,-13,4,3,T),
+      ...R(-5,57,-13,7,T),...R(-5,58,-13,7,T),
+      ...C(-5,58,-13,9,T),...C(-4,58,-13,9,T),
+      ...B(-6,67,-13,5,3,T),
+      ...RampY(-5,70,-13,5,4,T),
+      ...C(-4,75,-17,6,T),
+      ...B(-6,81,-17,5,4,'goal'),
+    ],
+    start:{gx:0,gy:1,gz:0}, goal:{gx:-4,gy:82,gz:-17},
+    enemies:[
+      {type:'ghost',gx:0,gy:6,gz:-1,path:[{gx:-1,gy:4,gz:0},{gx:0,gy:11,gz:-6}]},
+      {type:'rotatosquare',gx:-1,gy:9,gz:-4,path:[{gx:-1,gy:6,gz:-2},{gx:0,gy:11,gz:-7}]},
+      {type:'rollerball',gx:-1,gy:14,gz:-7,small:true,path:[{gx:-2,gy:13,gz:-7},{gx:2,gy:13,gz:-7}]},
+      {type:'crab',gx:-6,gy:18,gz:-7,path:[{gx:-6,gy:14,gz:-7},{gx:-5,gy:22,gz:-7}]},
+      {type:'skullhead',gx:-3,gy:27,gz:-7,path:[{gx:-7,gy:27,gz:-7},{gx:0,gy:27,gz:-7}]},
+      {type:'rotatosquare',gx:1,gy:31,gz:-7,path:[{gx:0,gy:27,gz:-7},{gx:1,gy:35,gz:-7}]},
+      {type:'zigzagger',gx:1,gy:38,gz:-8,path:[{gx:0,gy:36,gz:-7},{gx:2,gy:44,gz:-13}]},
+      {type:'rollerball',gx:1,gy:50,gz:-13,small:true,path:[{gx:1,gy:46,gz:-13},{gx:1,gy:55,gz:-13}]},
+      {type:'rotatosquare',gx:-2,gy:59,gz:-13,path:[{gx:-5,gy:58,gz:-13},{gx:0,gy:59,gz:-13}]},
+      {type:'ghost',gx:-4,gy:65,gz:-13,path:[{gx:-6,gy:58,gz:-13},{gx:-4,gy:66,gz:-13}]},
+      {type:'skullhead',gx:-4,gy:72,gz:-13,path:[{gx:-6,gy:70,gz:-13},{gx:-3,gy:73,gz:-13}]},
+      {type:'rotatosquare',gx:-4,gy:77,gz:-17,path:[{gx:-4,gy:75,gz:-17},{gx:-4,gy:80,gz:-17}]},
+    ]
+  };
+}
+
+// ── Level 7 ─ DARK CROSSING — dark, stepping stones, near-miss bridges ────
+function L7(){
+  const T='dark';
+  const tiles=[...B(-2,0,0,5,3,T)];
+  // Stepping stones — isolated 2x2 pads
+  const stones=[[0,4,0],[2,7,-1],[-1,10,-1],[1,13,-2],[-1,16,-3],[2,19,-3],
+    [0,22,-4],[-2,25,-4],[1,28,-5],[-1,31,-5],[0,34,-6],[2,37,-6]];
+  for(const [x,y,z] of stones)for(let dx=0;dx<2;dx++)for(let dy=0;dy<2;dy++)tiles.push([x+dx,y+dy,z,T]);
+  // Connecting 1-tile bridges
+  tiles.push([1,6,-1],[0,9,-1],[1,12,-2],[0,15,-3],[1,18,-3],[1,21,-4],[-1,24,-4],[0,27,-5],[0,30,-5],[1,33,-6]);
+  // Corridor after stones
+  for(let y=39;y<47;y++){tiles.push([0,y,-6,T]);tiles.push([1,y,-6,T]);}
+  tiles.push(...B(-1,47,-6,4,3,T));
+  tiles.push(...RampY(-1,50,-6,6,3,T));
+  for(let y=56;y<65;y++)tiles.push([0,y,-11,T]);
+  tiles.push(...B(-2,65,-11,5,3,T));
+  tiles.push(...RampY(-1,68,-11,5,3,T));
+  for(let y=73;y<80;y++)tiles.push([0,y,-15,T],[1,y,-15,T]);
+  tiles.push(...B(-1,80,-15,4,4,'goal'));
+  return {
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:0,gy:81,gz:-15},
+    enemies:[
+      {type:'ghost',gx:1,gy:5,gz:0,path:[{gx:0,gy:4,gz:0},{gx:2,gy:6,gz:0}]},
+      {type:'rotatosquare',gx:1,gy:9,gz:-1,path:[{gx:1,gy:7,gz:-1},{gx:2,gy:11,gz:-1}]},
+      {type:'rollerball',gx:0,gy:13,gz:-2,small:true,path:[{gx:-1,gy:13,gz:-2},{gx:2,gy:13,gz:-2}]},
+      {type:'skullhead',gx:0,gy:17,gz:-3,path:[{gx:-1,gy:16,gz:-3},{gx:2,gy:17,gz:-3}]},
+      {type:'rotatosquare',gx:1,gy:22,gz:-4,path:[{gx:0,gy:22,gz:-4},{gx:2,gy:22,gz:-4}]},
+      {type:'zigzagger',gx:0,gy:26,gz:-4,path:[{gx:-2,gy:25,gz:-4},{gx:2,gy:25,gz:-4}]},
+      {type:'ghost',gx:1,gy:32,gz:-5,path:[{gx:1,gy:28,gz:-5},{gx:1,gy:38,gz:-6}]},
+      {type:'crab',gx:0,gy:43,gz:-6,path:[{gx:-1,gy:40,gz:-6},{gx:1,gy:46,gz:-6}]},
+      {type:'rotatosquare',gx:0,gy:59,gz:-11,path:[{gx:0,gy:56,gz:-11},{gx:0,gy:64,gz:-11}]},
+      {type:'skullhead',gx:0,gy:62,gz:-11,path:[{gx:0,gy:56,gz:-11},{gx:0,gy:64,gz:-11}]},
+      {type:'rollerball',gx:1,gy:75,gz:-15,small:true,path:[{gx:0,gy:73,gz:-15},{gx:1,gy:79,gz:-15}]},
+      {type:'rotatosquare',gx:0,gy:77,gz:-15,path:[{gx:0,gy:73,gz:-15},{gx:1,gy:79,gz:-15}]},
+    ]
+  };
+}
+
+// ── Level 8 ─ THE GAUNTLET — green, narrow gauntlet runs with obstacles ───
+function L8(){
+  const T='green';
+  return {
+    tiles:[
+      ...B(-2,0,0,5,4,T),
+      ...C(0,4,0,9,T),...C(1,4,0,9,T),
+      ...R(2,12,0,7,T),...R(2,13,0,7,T),
+      ...C(8,13,0,8,T),...C(9,13,0,8,T),
+      ...R(2,20,0,7,T),...R(2,21,0,7,T),
+      ...C(2,21,0,8,T),...C(1,21,0,8,T),
+      ...R(1,28,0,8,T),...R(1,29,0,8,T),
+      ...C(8,29,0,8,T),...C(9,29,0,8,T),
+      ...R(2,36,0,7,T),...R(2,37,0,7,T),
+      ...C(2,37,0,7,T),...C(1,37,0,7,T),
+      ...B(-1,44,0,4,3,T),
+      ...RampY(-1,47,0,7,4,T),
+      ...C(0,54,-6,10,T),
+      ...B(-2,64,-6,5,3,T),
+      ...R(-2,67,-6,9,T),...R(-2,68,-6,9,T),
+      ...C(6,68,-6,9,T),
+      ...B(5,77,-6,4,3,T),
+      ...RampY(5,80,-6,6,3,T),
+      ...C(6,86,-11,8,T),
+      ...B(4,94,-11,5,4,'goal'),
+    ],
+    start:{gx:0,gy:1,gz:0}, goal:{gx:5,gy:95,gz:-11},
+    enemies:[
+      {type:'rollerball',gx:0,gy:5,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:1,gy:12,gz:0}]},
+      {type:'rotatosquare',gx:5,gy:13,gz:0,path:[{gx:2,gy:12,gz:0},{gx:8,gy:13,gz:0}]},
+      {type:'crab',gx:8,gy:17,gz:0,path:[{gx:8,gy:13,gz:0},{gx:9,gy:20,gz:0}]},
+      {type:'zigzagger',gx:4,gy:21,gz:0,path:[{gx:2,gy:21,gz:0},{gx:8,gy:21,gz:0}]},
+      {type:'rotatosquare',gx:3,gy:24,gz:0,path:[{gx:1,gy:22,gz:0},{gx:8,gy:22,gz:0}]},
+      {type:'skullhead',gx:4,gy:29,gz:0,path:[{gx:1,gy:28,gz:0},{gx:8,gy:30,gz:0}]},
+      {type:'rollerball',gx:4,gy:33,gz:0,small:true,path:[{gx:2,gy:30,gz:0},{gx:8,gy:33,gz:0}]},
+      {type:'rotatosquare',gx:2,gy:37,gz:0,path:[{gx:1,gy:37,gz:0},{gx:8,gy:37,gz:0}]},
+      {type:'ghost',gx:0,gy:56,gz:-6,path:[{gx:0,gy:54,gz:-6},{gx:0,gy:63,gz:-6}]},
+      {type:'rotatosquare',gx:2,gy:68,gz:-6,path:[{gx:-2,gy:68,gz:-6},{gx:5,gy:68,gz:-6}]},
+      {type:'skullhead',gx:6,gy:73,gz:-6,path:[{gx:5,gy:68,gz:-6},{gx:8,gy:76,gz:-6}]},
+      {type:'rollerball',gx:6,gy:82,gz:-6,small:true,path:[{gx:5,gy:80,gz:-6},{gx:8,gy:83,gz:-6}]},
+      {type:'rotatosquare',gx:6,gy:89,gz:-11,path:[{gx:6,gy:86,gz:-11},{gx:6,gy:93,gz:-11}]},
+    ]
+  };
+}
+
+// ── Level 9 ─ CHAOS FACTORY — checker+lava mix, very long, max enemies ────
+function L9(){
   const tiles=[];
   // Start
-  for(let x=-2;x<=2;x++) for(let y=0;y<3;y++) tiles.push([x,y,0,'red']);
-  // 2-wide corridor down
-  for(let y=3;y<9;y++){tiles.push([0,y,0,'red']);tiles.push([1,y,0,'yellow']);}
+  for(let x=-2;x<=3;x++)for(let y=0;y<4;y++)tiles.push([x,y,0,'checker']);
+  // Mixed checker+lava sections
+  for(let y=4;y<12;y++){tiles.push([0,y,0,'checker']);tiles.push([1,y,0,'lava']);}
+  for(let x=1;x<=9;x++){tiles.push([x,12,0,'lava']);tiles.push([x,13,0,'checker']);}
+  for(let y=13;y<22;y++){tiles.push([9,y,0,'checker']);tiles.push([10,y,0,'lava']);}
+  for(let x=10;x>=2;x--){tiles.push([x,22,0,'lava']);tiles.push([x,23,0,'checker']);}
+  for(let y=23;y<32;y++){tiles.push([2,y,0,'checker']);tiles.push([3,y,0,'lava']);}
+  for(let x=2;x<=10;x++){tiles.push([x,32,0,'lava']);tiles.push([x,33,0,'checker']);}
+  for(let y=33;y<40;y++){tiles.push([10,y,0,'checker']);tiles.push([11,y,0,'lava']);}
+  // Wide platform
+  for(let x=8;x<=14;x++)for(let y=40;y<44;y++)tiles.push([x,y,0,'checker']);
+  // Ramp down
+  for(let s=0;s<7;s++)for(let j=0;j<3;j++)tiles.push([9+j,44+s,-s,'lava']);
+  // Bridge section
+  for(let y=51;y<61;y++){tiles.push([10,y,-6,'checker']);tiles.push([11,y,-6,'lava']);}
   // Platform
-  for(let x=-1;x<=4;x++) for(let y=9;y<12;y++) tiles.push([x,y,0,'red']);
-  // 2-wide bridge going right
-  for(let x=4;x<=10;x++){tiles.push([x,9,0,'yellow']);tiles.push([x,10,0,'red']);}
-  // Ramp going right (3-high, 6 steps)
-  for(let s=0;s<6;s++) for(let j=0;j<2;j++) tiles.push([10+s,9+j,-s,'red']);
-  // 1-wide bridge
-  for(let y=9;y<18;y++) tiles.push([15,y,-5,'red'],[16,y,-5,'yellow']);
-  // Platform
-  for(let x=13;x<=18;x++) for(let y=18;y<21;y++) tiles.push([x,y,-5,'red']);
-  // Left-zigzag 1-wide
-  for(let y=21;y<28;y++) tiles.push([13,y,-5,'yellow']);
-  // Turn right across
-  for(let x=13;x<=18;x++) tiles.push([x,28,-5,'red']);
-  // 1-wide right wall
-  for(let y=28;y<35;y++) tiles.push([18,y,-5,'yellow']);
-  // Platform
-  for(let x=16;x<=21;x++) for(let y=35;y<38;y++) tiles.push([x,y,-5,'red']);
+  for(let x=8;x<=14;x++)for(let y=61;y<64;y++)tiles.push([x,y,-6,'checker']);
   // Ramp
-  for(let s=0;s<5;s++) for(let j=0;j<3;j++) tiles.push([16+j,38+s,-5-s,'red']);
-  // 2-wide bridge
-  for(let y=43;y<51;y++){tiles.push([17,y,-9,'red']);tiles.push([18,y,-9,'yellow']);}
-  // Goal
-  for(let x=15;x<=21;x++) for(let y=51;y<55;y++) tiles.push([x,y,-9,'goal']);
+  for(let s=0;s<6;s++)for(let j=0;j<3;j++)tiles.push([9+j,64+s,-6-s,'lava']);
+  // 1-wide bridge
+  for(let y=70;y<80;y++)tiles.push([10,y,-11,'checker']);
+  // Final platform+goal
+  for(let x=8;x<=14;x++)for(let y=80;y<84;y++)tiles.push([x,y,-11,'goal']);
   return {
-    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:18,gy:52,gz:-9},
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:10,gy:81,gz:-11},
     enemies:[
-      {type:'rollerball',gx:0,gy:5,gz:0,small:true,path:[{gx:0,gy:3,gz:0},{gx:1,gy:8,gz:0}]},
-      {type:'rollerball',gx:1,gy:4,gz:0,small:true,path:[{gx:0,gy:3,gz:0},{gx:1,gy:8,gz:0}]},
-      {type:'crab',gx:2,gy:10,gz:0,path:[{gx:-1,gy:10,gz:0},{gx:4,gy:10,gz:0}]},
-      {type:'zigzagger',gx:7,gy:9,gz:0,path:[{gx:4,gy:9,gz:0},{gx:9,gy:9,gz:0}]},
-      {type:'skullhead',gx:15,gy:13,gz:-5,path:[{gx:15,gy:9,gz:-5},{gx:16,gy:17,gz:-5}]},
-      {type:'ghost',gx:13,gy:24,gz:-5,path:[{gx:13,gy:21,gz:-5},{gx:13,gy:27,gz:-5}]},
-      {type:'spinner',gx:18,gy:31,gz:-5,path:[{gx:18,gy:28,gz:-5},{gx:18,gy:34,gz:-5}]},
-      {type:'firefly',gx:17,gy:47,gz:-9,path:[{gx:17,gy:43,gz:-9},{gx:18,gy:50,gz:-9}]},
+      {type:'rollerball',gx:0,gy:6,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:1,gy:11,gz:0}]},
+      {type:'rotatosquare',gx:5,gy:12,gz:0,path:[{gx:1,gy:12,gz:0},{gx:9,gy:13,gz:0}]},
+      {type:'skullhead',gx:9,gy:15,gz:0,path:[{gx:9,gy:13,gz:0},{gx:10,gy:21,gz:0}]},
+      {type:'crab',gx:5,gy:22,gz:0,path:[{gx:2,gy:22,gz:0},{gx:10,gy:23,gz:0}]},
+      {type:'rotatosquare',gx:2,gy:27,gz:0,path:[{gx:2,gy:23,gz:0},{gx:3,gy:31,gz:0}]},
+      {type:'zigzagger',gx:6,gy:31,gz:0,path:[{gx:2,gy:30,gz:0},{gx:10,gy:33,gz:0}]},
+      {type:'rollerball',gx:9,gy:35,gz:0,small:true,path:[{gx:8,gy:33,gz:0},{gx:11,gy:39,gz:0}]},
+      {type:'rotatosquare',gx:11,gy:38,gz:0,path:[{gx:8,gy:33,gz:0},{gx:11,gy:39,gz:0}]},
+      {type:'ghost',gx:10,gy:42,gz:0,path:[{gx:8,gy:40,gz:0},{gx:14,gy:42,gz:0}]},
+      {type:'skullhead',gx:10,gy:53,gz:-6,path:[{gx:10,gy:51,gz:-6},{gx:11,gy:60,gz:-6}]},
+      {type:'rotatosquare',gx:11,gy:56,gz:-6,path:[{gx:10,gy:51,gz:-6},{gx:11,gy:60,gz:-6}]},
+      {type:'crab',gx:10,gy:63,gz:-6,path:[{gx:8,gy:61,gz:-6},{gx:14,gy:62,gz:-6}]},
+      {type:'rollerball',gx:10,gy:73,gz:-11,small:true,path:[{gx:10,gy:70,gz:-11},{gx:10,gy:79,gz:-11}]},
+      {type:'rotatosquare',gx:10,gy:76,gz:-11,path:[{gx:10,gy:70,gz:-11},{gx:10,gy:79,gz:-11}]},
     ]
   };
 }
 
-// ── Level 6 ─ Golden Peaks ────────────────────────────────────────────────
-function L6(){
-  const tiles=[
-    ...B(-3,0,0,7,4,'gold'),
-    // 1-wide bridge
-    ...C(0,4,0,7,'gold'),
-    // Floating platform
-    ...B(-1,11,0,4,3,'gold'),
-    // 2-wide bridge
-    ...C(-1,14,0,8,'gold'),...C(0,14,0,8,'gold'),
-    // Platform
-    ...B(-2,22,0,5,3,'gold'),
-    // Ramp (wide)
-    ...RampY(-2,25,0,7,5,'gold'),
-    // 1-wide bridge
-    ...C(0,32,-6,9,'gold'),
-    // Platform
-    ...B(-2,41,-6,5,3,'gold'),
-    // Turn left 1-wide
-    ...R(-6,42,-6,5,'gold'),
-    // 2-wide bridge heading down
-    ...C(-6,43,-6,9,'gold'),...C(-5,43,-6,9,'gold'),
-    // Platform
-    ...B(-8,52,-6,5,3,'gold'),
-    // Ramp
-    ...RampY(-7,55,-6,5,4,'gold'),
-    // 1-wide bridge to goal
-    ...C(-5,60,-10,5,'gold'),
-    // Goal
-    ...B(-7,65,-10,5,4,'goal'),
-  ];
-  return {
-    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:-5,gy:66,gz:-10},
-    enemies:[
-      {type:'rollerball',gx:0,gy:6,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:0,gy:10,gz:0}]},
-      {type:'bouncer',gx:-1,gy:13,gz:0,path:[{gx:-2,gy:12,gz:0},{gx:2,gy:13,gz:0}]},
-      {type:'spinner',gx:0,gy:24,gz:0,path:[{gx:-2,gy:23,gz:0},{gx:2,gy:24,gz:0}]},
-      {type:'inchworm',gx:0,gy:35,gz:-6,path:[{gx:0,gy:32,gz:-6},{gx:0,gy:40,gz:-6}]},
-      {type:'skullhead',gx:-1,gy:43,gz:-6,path:[{gx:-2,gy:42,gz:-6},{gx:1,gy:43,gz:-6}]},
-      {type:'crab',gx:-5,gy:47,gz:-6,path:[{gx:-6,gy:43,gz:-6},{gx:-4,gy:51,gz:-6}]},
-      {type:'ghost',gx:-5,gy:62,gz:-10,path:[{gx:-5,gy:60,gz:-10},{gx:-5,gy:64,gz:-10}]},
-    ]
-  };
-}
-
-// ── Level 7 ─ Purple Haze ─────────────────────────────────────────────────
-function L7(){
-  const tiles=[
-    ...B(-2,0,0,5,3,'purple'),
-    // Narrow 2-wide diagonal descent
-    ...RampY(-1,3,0,7,2,'purple'),
-    // Platform
-    ...B(-2,10,-6,5,3,'purple'),
-    // Hard LEFT turn 1-wide bridge
-    ...R(-6,11,-6,5,'purple'),
-    // Down 1-wide
-    ...C(-6,12,-6,9,'purple'),
-    // Platform
-    ...B(-8,21,-6,5,3,'purple'),
-    // Right turn 2-wide
-    ...R(-8,22,-6,8,'purple'),...R(-8,23,-6,8,'purple'),
-    // Down ramp
-    ...RampY(-1,24,-6,6,3,'purple'),
-    // 1-wide bridge
-    ...C(0,30,-11,10,'purple'),
-    // Platform
-    ...B(-1,40,-11,4,3,'purple'),
-    // Left 1-wide long bridge
-    ...R(-6,41,-11,6,'purple'),
-    // Down 2-wide
-    ...C(-6,41,-11,10,'purple'),...C(-5,41,-11,10,'purple'),
-    // Platform
-    ...B(-8,51,-11,5,3,'purple'),
-    // Ramp
-    ...RampY(-7,54,-11,5,4,'purple'),
-    // Goal
-    ...B(-8,59,-15,5,4,'goal'),
-  ];
-  return {
-    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:-6,gy:60,gz:-15},
-    enemies:[
-      {type:'ghost',gx:0,gy:5,gz:-1,path:[{gx:-1,gy:4,gz:0},{gx:0,gy:9,gz:-5}]},
-      {type:'rollerball',gx:-1,gy:11,gz:-6,small:true,path:[{gx:-2,gy:11,gz:-6},{gx:2,gy:11,gz:-6}]},
-      {type:'slinky',gx:-6,gy:15,gz:-6,path:[{gx:-6,gy:12,gz:-6},{gx:-6,gy:20,gz:-6}]},
-      {type:'crab',gx:-4,gy:22,gz:-6,path:[{gx:-8,gy:22,gz:-6},{gx:-1,gy:22,gz:-6}]},
-      {type:'zigzagger',gx:0,gy:25,gz:-7,path:[{gx:-1,gy:24,gz:-6},{gx:2,gy:29,gz:-11}]},
-      {type:'skullhead',gx:0,gy:34,gz:-11,path:[{gx:0,gy:30,gz:-11},{gx:0,gy:39,gz:-11}]},
-      {type:'spinner',gx:-2,gy:42,gz:-11,path:[{gx:-3,gy:40,gz:-11},{gx:0,gy:42,gz:-11}]},
-      {type:'firefly',gx:-6,gy:45,gz:-11,path:[{gx:-6,gy:41,gz:-11},{gx:-5,gy:50,gz:-11}]},
-      {type:'bouncer',gx:-5,gy:56,gz:-11,path:[{gx:-8,gy:54,gz:-11},{gx:-3,gy:56,gz:-11}]},
-    ]
-  };
-}
-
-// ── Level 8 ─ Dark Abyss ──────────────────────────────────────────────────
-function L8(){
-  const tiles=[
-    ...B(-2,0,0,5,3,'dark'),
-    // Isolated 2x2 stepping stones with 1-tile connectors
-    ...B(-1,4,0,2,2,'dark'),
-    [0,6,0,'dark'],
-    ...B(1,7,-1,2,2,'dark'),
-    [1,9,-1,'dark'],
-    ...B(-1,10,-2,2,2,'dark'),
-    [0,12,-2,'dark'],
-    ...B(1,13,-3,2,2,'dark'),
-    [1,15,-3,'dark'],[0,16,-3,'dark'],
-    ...B(-1,17,-4,2,2,'dark'),
-    [0,19,-4,'dark'],
-    ...B(0,20,-5,2,2,'dark'),
-    [1,22,-5,'dark'],
-    ...B(0,23,-5,2,2,'dark'),
-    // Narrow corridor
-    ...C(0,25,-5,8,'dark'),...C(1,25,-5,8,'dark'),
-    // Platform
-    ...B(-1,33,-5,4,3,'dark'),
-    // 1-wide bridge
-    ...C(0,36,-5,9,'dark'),
-    // Ramp
-    ...RampY(-1,45,-5,5,3,'dark'),
-    // 1-wide bridge to goal
-    ...C(0,50,-9,7,'dark'),
-    // Goal
-    ...B(-1,57,-9,4,4,'goal'),
-  ];
-  return {
-    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:0,gy:58,gz:-9},
-    enemies:[
-      {type:'ghost',gx:0,gy:5,gz:0,path:[{gx:-1,gy:5,gz:0},{gx:1,gy:5,gz:0}]},
-      {type:'skullhead',gx:1,gy:8,gz:-1,path:[{gx:1,gy:7,gz:-1},{gx:2,gy:8,gz:-1}]},
-      {type:'rollerball',gx:0,gy:14,gz:-3,small:true,path:[{gx:-1,gy:13,gz:-3},{gx:2,gy:14,gz:-3}]},
-      {type:'zigzagger',gx:1,gy:18,gz:-4,path:[{gx:0,gy:17,gz:-4},{gx:1,gy:19,gz:-4}]},
-      {type:'ghost',gx:0,gy:22,gz:-5,path:[{gx:0,gy:20,gz:-5},{gx:1,gy:24,gz:-5}]},
-      {type:'inchworm',gx:0,gy:29,gz:-5,path:[{gx:0,gy:26,gz:-5},{gx:1,gy:32,gz:-5}]},
-      {type:'firefly',gx:0,gy:39,gz:-5,path:[{gx:0,gy:36,gz:-5},{gx:0,gy:44,gz:-5}]},
-      {type:'bouncer',gx:0,gy:53,gz:-9,path:[{gx:0,gy:50,gz:-9},{gx:0,gy:56,gz:-9}]},
-    ]
-  };
-}
-
-// ── Level 9 ─ The Gauntlet ────────────────────────────────────────────────
-function L9(){
-  const tiles=[
-    ...B(-2,0,0,5,3,'normal'),
-    // Maze: right 2-wide
-    ...R(2,1,0,6,'normal'),...R(2,2,0,6,'normal'),
-    // Down 2-wide
-    ...C(7,1,0,6,'normal'),...C(8,1,0,6,'normal'),
-    // Left 2-wide
-    ...R(1,6,0,8,'normal'),...R(1,7,0,8,'normal'),
-    // Down 2-wide
-    ...C(1,7,0,7,'normal'),...C(0,7,0,7,'normal'),
-    // Right 2-wide
-    ...R(0,13,0,8,'normal'),...R(0,14,0,8,'normal'),
-    // Down 2-wide
-    ...C(7,13,0,7,'normal'),...C(8,13,0,7,'normal'),
-    // Left 2-wide
-    ...R(0,19,0,9,'normal'),...R(0,20,0,9,'normal'),
-    // Ramp
-    ...RampY(-1,21,0,6,3,'normal'),
-    // 1-wide bridge
-    ...C(0,27,-5,10,'normal'),
-    // Platform
-    ...B(-1,37,-5,4,3,'normal'),
-    // Ramp down
-    ...RampY(-1,40,-5,5,4,'normal'),
-    // 1-wide bridge
-    ...C(0,45,-9,9,'normal'),
-    // Goal
-    ...B(-1,54,-9,4,4,'goal'),
-  ];
-  return {
-    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:0,gy:55,gz:-9},
-    enemies:[
-      {type:'rollerball',gx:4,gy:1,gz:0,small:true,path:[{gx:2,gy:1,gz:0},{gx:7,gy:1,gz:0}]},
-      {type:'rollerball',gx:4,gy:2,gz:0,small:true,path:[{gx:2,gy:2,gz:0},{gx:7,gy:2,gz:0}]},
-      {type:'crab',gx:7,gy:4,gz:0,path:[{gx:7,gy:1,gz:0},{gx:8,gy:6,gz:0}]},
-      {type:'slinky',gx:4,gy:7,gz:0,path:[{gx:1,gy:7,gz:0},{gx:8,gy:7,gz:0}]},
-      {type:'zigzagger',gx:1,gy:10,gz:0,path:[{gx:0,gy:7,gz:0},{gx:1,gy:13,gz:0}]},
-      {type:'spinner',gx:5,gy:14,gz:0,path:[{gx:0,gy:14,gz:0},{gx:8,gy:14,gz:0}]},
-      {type:'skullhead',gx:4,gy:19,gz:0,path:[{gx:0,gy:19,gz:0},{gx:8,gy:20,gz:0}]},
-      {type:'ghost',gx:0,gy:31,gz:-5,path:[{gx:0,gy:27,gz:-5},{gx:0,gy:36,gz:-5}]},
-      {type:'firefly',gx:0,gy:40,gz:-5,path:[{gx:-1,gy:40,gz:-5},{gx:2,gy:40,gz:-5}]},
-      {type:'bouncer',gx:0,gy:50,gz:-9,path:[{gx:0,gy:45,gz:-9},{gx:0,gy:53,gz:-9}]},
-    ]
-  };
-}
-
-// ── Level 10 ─ Final Chaos ─────────────────────────────────────────────────
+// ── Level 10 ─ FINAL DESCENT — all tile types, extreme length, max enemies
 function L10(){
   const tiles=[
-    ...B(-2,0,0,5,3,'normal'),
-    // Multi-color maze
-    ...R(2,1,0,5,'red'),...R(2,2,0,5,'yellow'),
-    ...C(6,1,0,5,'red'),...C(7,1,0,5,'yellow'),
-    ...R(0,5,0,7,'yellow'),...R(0,6,0,7,'red'),
-    ...C(0,6,0,6,'purple'),...C(1,6,0,6,'purple'),
-    ...R(0,11,0,8,'gold'),...R(0,12,0,8,'gold'),
-    ...C(7,11,0,7,'red'),...C(8,11,0,7,'yellow'),
-    ...R(-1,17,0,10,'checker'),...R(-1,18,0,10,'checker'),
-    ...C(-1,18,0,6,'red'),...C(0,18,0,6,'yellow'),
-    // Ramp
-    ...RampY(-1,24,0,7,4,'red'),
-    // 1-wide bridge
-    ...C(1,31,-6,10,'gold'),
-    // Platform
-    ...B(0,41,-6,4,3,'purple'),
-    // Multiple enemies gauntlet 1-wide bridge
-    ...C(1,44,-6,10,'purple'),
-    // Ramp
-    ...RampY(0,54,-6,5,4,'dark'),
-    // 1-wide super-narrow bridge
-    ...C(1,59,-10,10,'dark'),
-    // Goal
-    ...B(-1,69,-10,5,4,'goal'),
+    ...B(-2,0,0,5,4,'normal'),
+    ...RampY(-1,4,0,6,3,'normal'),
+    ...B(-1,10,-5,5,3,'ice'),
+    ...C(0,13,-5,8,'ice'),
+    ...B(-2,21,-5,5,3,'blue'),
+    ...R(-2,24,-5,9,'blue'),...R(-2,25,-5,9,'blue'),
+    ...C(6,25,-5,9,'blue'),
+    ...B(5,34,-5,4,3,'red'),
+    ...RampY(5,37,-5,6,3,'red'),
+    ...C(6,43,-10,9,'gold'),
+    ...B(4,52,-10,4,3,'gold'),
+    ...R(0,53,-10,5,'purple'),...R(0,54,-10,5,'purple'),
+    ...C(0,54,-10,9,'purple'),...C(1,54,-10,9,'purple'),
+    ...B(-1,63,-10,4,3,'purple'),
+    ...RampY(-1,66,-10,6,3,'dark'),
+    ...C(0,72,-15,10,'dark'),
+    ...B(-2,82,-15,5,3,'checker'),
+    ...R(-2,85,-15,9,'checker'),
+    ...C(6,85,-15,9,'checker'),
+    ...B(5,94,-15,4,3,'lava'),
+    ...RampY(5,97,-15,5,3,'lava'),
+    ...C(6,102,-19,6,'normal'),
+    ...B(4,108,-19,5,4,'goal'),
   ];
   return {
-    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:1,gy:70,gz:-10},
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:5,gy:109,gz:-19},
     enemies:[
-      {type:'rollerball',gx:4,gy:1,gz:0,small:true,path:[{gx:2,gy:1,gz:0},{gx:6,gy:1,gz:0}]},
-      {type:'rollerball',gx:4,gy:2,gz:0,small:true,path:[{gx:2,gy:2,gz:0},{gx:6,gy:2,gz:0}]},
-      {type:'crab',gx:7,gy:3,gz:0,path:[{gx:6,gy:1,gz:0},{gx:7,gy:5,gz:0}]},
-      {type:'zigzagger',gx:3,gy:6,gz:0,path:[{gx:0,gy:6,gz:0},{gx:6,gy:6,gz:0}]},
-      {type:'spinner',gx:3,gy:12,gz:0,path:[{gx:0,gy:11,gz:0},{gx:7,gy:12,gz:0}]},
-      {type:'skullhead',gx:8,gy:14,gz:0,path:[{gx:7,gy:11,gz:0},{gx:8,gy:17,gz:0}]},
-      {type:'ghost',gx:0,gy:19,gz:0,path:[{gx:-1,gy:18,gz:0},{gx:0,gy:23,gz:0}]},
-      {type:'slinky',gx:1,gy:27,gz:-1,path:[{gx:0,gy:25,gz:0},{gx:2,gy:30,gz:-5}]},
-      {type:'bouncer',gx:1,gy:35,gz:-6,path:[{gx:0,gy:32,gz:-6},{gx:3,gy:35,gz:-6}]},
-      {type:'inchworm',gx:1,gy:47,gz:-6,path:[{gx:1,gy:44,gz:-6},{gx:1,gy:53,gz:-6}]},
-      {type:'firefly',gx:1,gy:63,gz:-10,path:[{gx:1,gy:59,gz:-10},{gx:1,gy:68,gz:-10}]},
+      {type:'rollerball',gx:0,gy:6,gz:-1,small:true,path:[{gx:-1,gy:5,gz:0},{gx:1,gy:9,gz:-4}]},
+      {type:'rotatosquare',gx:0,gy:12,gz:-5,path:[{gx:-1,gy:10,gz:-5},{gx:2,gy:12,gz:-5}]},
+      {type:'iceball',gx:0,gy:15,gz:-5,small:true,path:[{gx:0,gy:13,gz:-5},{gx:0,gy:20,gz:-5}]},
+      {type:'crab',gx:2,gy:24,gz:-5,path:[{gx:-2,gy:24,gz:-5},{gx:5,gy:24,gz:-5}]},
+      {type:'skullhead',gx:6,gy:29,gz:-5,path:[{gx:-2,gy:25,gz:-5},{gx:6,gy:33,gz:-5}]},
+      {type:'rotatosquare',gx:6,gy:36,gz:-5,path:[{gx:5,gy:34,gz:-5},{gx:8,gy:36,gz:-5}]},
+      {type:'rollerball',gx:6,gy:46,gz:-10,small:true,path:[{gx:6,gy:43,gz:-10},{gx:6,gy:51,gz:-10}]},
+      {type:'ghost',gx:6,gy:49,gz:-10,path:[{gx:4,gy:43,gz:-10},{gx:7,gy:54,gz:-10}]},
+      {type:'rotatosquare',gx:0,gy:56,gz:-10,path:[{gx:0,gy:54,gz:-10},{gx:1,gy:62,gz:-10}]},
+      {type:'zigzagger',gx:1,gy:59,gz:-10,path:[{gx:0,gy:54,gz:-10},{gx:1,gy:62,gz:-10}]},
+      {type:'skullhead',gx:0,gy:68,gz:-10,path:[{gx:-1,gy:66,gz:-10},{gx:2,gy:71,gz:-10}]},
+      {type:'rotatosquare',gx:0,gy:75,gz:-15,path:[{gx:0,gy:72,gz:-15},{gx:0,gy:81,gz:-15}]},
+      {type:'rollerball',gx:0,gy:78,gz:-15,small:true,path:[{gx:0,gy:72,gz:-15},{gx:0,gy:81,gz:-15}]},
+      {type:'crab',gx:2,gy:86,gz:-15,path:[{gx:-2,gy:85,gz:-15},{gx:5,gy:85,gz:-15}]},
+      {type:'rotatosquare',gx:6,gy:89,gz:-15,path:[{gx:-2,gy:85,gz:-15},{gx:6,gy:93,gz:-15}]},
+      {type:'skullhead',gx:6,gy:98,gz:-15,path:[{gx:5,gy:94,gz:-15},{gx:8,gy:96,gz:-15}]},
+      {type:'ghost',gx:6,gy:104,gz:-19,path:[{gx:6,gy:102,gz:-19},{gx:6,gy:107,gz:-19}]},
+      {type:'rotatosquare',gx:6,gy:106,gz:-19,path:[{gx:6,gy:102,gz:-19},{gx:6,gy:107,gz:-19}]},
     ]
   };
 }
@@ -670,7 +640,7 @@ class Enemy{
       this.physEnabled=true;
     }
     // Chase enemies: rollerball, skullhead, crab, ghost actively hunt player
-    this.chases = ['rollerball','iceball','skullhead','ghost','crab'].includes(this.type);
+    this.chases = ['rollerball','iceball','skullhead','ghost','crab','rotatosquare'].includes(this.type);
     // Path patrol bounds (used as roam limits even when chasing)
     this.patrolA = (def.path&&def.path[0]) ? def.path[0] : {gx:def.gx,gy:def.gy,gz:def.gz};
     this.patrolB = (def.path&&def.path[1]) ? def.path[1] : {gx:def.gx,gy:def.gy,gz:def.gz};
@@ -726,12 +696,11 @@ class Enemy{
     }
   }
   _spd(){return{rollerball:1.4,iceball:1.8,inchworm:.3,slinky:.6,bouncer:.8,
-    spinner:.5,ghost:1.0,zigzagger:1.2,crab:1.5,firefly:.7,skullhead:1.8}[this.type]||.6;}
+    spinner:.5,ghost:1.0,zigzagger:1.2,crab:1.5,rotatosquare:1.3,skullhead:1.8}[this.type]||.6;}
   drawZ(){
     const z=this.physEnabled?this.physZ:this.gz;
     if(this.type==='slinky') return z+Math.abs(Math.sin(this.anim*3))*.5;
     if(this.type==='bouncer') return z+Math.abs(Math.sin(this.anim*4.5))*.7;
-    if(this.type==='firefly') return z+.6+Math.sin(this.anim*2)*.3;
     if(this.type==='ghost') return z+Math.sin(this.anim)*.3;
     return z;
   }
@@ -752,7 +721,7 @@ class Enemy{
         case'ghost':      this._ghost(s.x,s.y); break;
         case'zigzagger':  this._zigzag(s.x,s.y); break;
         case'crab':       this._crab(s.x,s.y); break;
-        case'firefly':    this._firefly(s.x,s.y); break;
+        case'rotatosquare': this._rotatosquare(s.x,s.y); break;
         case'skullhead':  this._skull(s.x,s.y); break;
         default: drawMarble(s.x,s.y,12,'#ff7766','#cc2200','#ff4422',true);
       }
@@ -845,17 +814,36 @@ class Enemy{
     ctx.beginPath();ctx.arc(-4.8,-6,1.6,0,Math.PI*2);ctx.fill();
     ctx.beginPath();ctx.arc(6.2,-6,1.6,0,Math.PI*2);ctx.fill();ctx.restore();
   }
-  _firefly(sx,sy){
-    const gw=Math.abs(Math.sin(this.anim*3.5));ctx.save();ctx.translate(sx,sy);
-    const gr=ctx.createRadialGradient(0,0,1,0,0,24);
-    gr.addColorStop(0,`rgba(255,255,80,${gw*.65})`);gr.addColorStop(1,'transparent');
-    ctx.beginPath();ctx.arc(0,0,24,0,Math.PI*2);ctx.fillStyle=gr;ctx.fill();
-    ctx.beginPath();ctx.ellipse(0,0,7,12,0,0,Math.PI*2);ctx.fillStyle='rgba(80,210,40,.9)';ctx.fill();
-    ctx.globalAlpha=(.45+gw*.4)*ctx.globalAlpha;
-    ctx.beginPath();ctx.ellipse(-13,0,9.5,6,.5,0,Math.PI*2);ctx.fillStyle='rgba(180,255,160,.6)';ctx.fill();
-    ctx.beginPath();ctx.ellipse(13,0,9.5,6,-.5,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;
-    ctx.beginPath();ctx.arc(0,5.5,3.8,0,Math.PI*2);
-    ctx.fillStyle=`rgba(255,255,120,${.5+gw*.5})`;ctx.fill();ctx.restore();
+  _rotatosquare(sx,sy){
+    // A menacing rotating square that slides along paths
+    const angle = this.anim * 3.0; // spins fast
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(angle);
+    const s = 13;
+    // Outer glow
+    ctx.shadowColor = '#ff6600';
+    ctx.shadowBlur = 10;
+    // Main square body
+    ctx.beginPath();
+    ctx.rect(-s, -s, s*2, s*2);
+    const g = ctx.createLinearGradient(-s,-s,s,s);
+    g.addColorStop(0,'#ff4400'); g.addColorStop(0.5,'#ff9900'); g.addColorStop(1,'#ff4400');
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    // Inner rotating cross
+    ctx.strokeStyle = 'rgba(255,220,0,0.7)';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(-s,0); ctx.lineTo(s,0); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-s); ctx.lineTo(0,s); ctx.stroke();
+    // Corner spikes
+    ctx.fillStyle = '#ffcc00';
+    for(let i=0;i<4;i++){
+      const cx = (i<2?-1:1)*s, cy = (i%2===0?-1:1)*s;
+      ctx.beginPath(); ctx.arc(cx,cy,3.5,0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
   }
   _skull(sx,sy){
     const bob=Math.sin(this.anim*5.5)*2.2;ctx.save();ctx.translate(sx,sy+bob);
@@ -1146,7 +1134,7 @@ let tbPrevX=0,tbPrevY=0,tbCurX=0,tbCurY=0;
 //   diagonal works naturally as combination of both
 function applyDrag(sdx, sdy) {
   // Scale: pixels per unit of full input. Small value = very sensitive.
-  const SENS = 4; // pixels per frame of finger movement = full speed on mobile
+  const SENS = 5.3; // 75% of max sensitivity
   // Iso-correct mapping: right on screen = +gx/-gy world, down = +gx/+gy world
   const rawX = sdx / SENS;  // screen-right contribution
   const rawY = sdy / SENS;  // screen-down contribution
