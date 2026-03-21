@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>MARBLE MAYHEM</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:100vh;overflow:hidden;font-family:'Courier New',monospace;touch-action:none;}
+#hud{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:center;
+  padding:6px 14px;background:rgba(0,0,0,0.92);border-bottom:2px solid #ff6600;z-index:100;color:#fff;font-size:13px;}
+.hud-block{display:flex;flex-direction:column;align-items:center;}
+.hud-label{color:#ff6600;font-size:9px;letter-spacing:2px;text-transform:uppercase;}
+.hud-val{font-size:20px;font-weight:bold;color:#fff;}
+#lives-icons{display:flex;gap:4px;align-items:center;}
+.life-dot{width:13px;height:13px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#88ddff,#1166cc);box-shadow:0 0 5px #4488ff;}
+.life-dot.dead{background:#222;box-shadow:none;}
+#timer-bar-wrap{position:fixed;top:46px;left:0;right:0;height:4px;background:#111;z-index:100;}
+#timer-bar{height:100%;background:linear-gradient(90deg,#00ff88,#ffcc00,#ff3300);transition:width 0.15s;}
+canvas{display:block;touch-action:none;cursor:grab;}canvas:active{cursor:grabbing;}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,0.93);display:flex;flex-direction:column;
+  align-items:center;justify-content:center;z-index:500;color:#fff;}
+.overlay h1{font-size:clamp(26px,6vw,52px);color:#ff6600;letter-spacing:6px;
+  text-shadow:0 0 28px #ff6600,0 0 56px #ff3300;margin-bottom:6px;}
+.overlay .sub{font-size:clamp(10px,2.5vw,15px);color:#888;letter-spacing:3px;margin-bottom:28px;}
+.btn{padding:12px 36px;background:transparent;border:2px solid #ff6600;color:#ff6600;
+  font-family:'Courier New',monospace;font-size:15px;letter-spacing:3px;cursor:pointer;
+  text-transform:uppercase;transition:all 0.2s;margin:5px;}
+.btn:hover,.btn:active{background:#ff6600;color:#000;box-shadow:0 0 18px #ff6600;}
+.score-big{font-size:38px;color:#ffcc00;margin:8px 0;}
+.level-big{font-size:66px;color:#ff6600;line-height:1;}
+.level-name{font-size:15px;color:#aaa;letter-spacing:4px;margin-top:4px;margin-bottom:22px;}
+</style>
+</head>
+<body>
+<div id="hud">
+  <div class="hud-block"><div class="hud-label">Score</div><div class="hud-val" id="score-disp">0</div></div>
+  <div class="hud-block"><div class="hud-label">Level</div><div class="hud-val" id="level-disp">1</div></div>
+  <div class="hud-block"><div class="hud-label">Time</div><div class="hud-val" id="time-disp">60</div></div>
+  <div class="hud-block"><div class="hud-label">Lives</div>
+    <div id="lives-icons">
+      <div class="life-dot" id="life0"></div><div class="life-dot" id="life1"></div><div class="life-dot" id="life2"></div>
+    </div>
+  </div>
+</div>
+<div id="timer-bar-wrap"><div id="timer-bar"></div></div>
+<canvas id="gc"></canvas>
+
+<div class="overlay" id="start-screen">
+  <h1>MARBLE MAYHEM</h1><div class="sub">ARCADE EDITION</div>
+  <p style="color:#666;font-size:11px;max-width:300px;text-align:center;margin-bottom:22px;">
+    Guide your marble to the GOAL flag.<br>Narrow bridges. Big drops. 3 lives.<br>
+    Push small enemy balls off the edge!
+  </p>
+  <button class="btn" id="start-btn">INSERT COIN</button>
+</div>
+<div class="overlay" id="level-screen" style="display:none">
+  <div class="sub">LEVEL</div><div class="level-big" id="lvl-num">1</div>
+  <div class="level-name" id="lvl-name">BEGINNER'S LUCK</div>
+  <button class="btn" id="go-btn">GO!</button>
+</div>
+<div class="overlay" id="death-screen" style="display:none">
+  <h1>FELL OFF!</h1><div class="sub" id="death-sub">LIVES REMAINING: 2</div>
+  <button class="btn" id="retry-btn">TRY AGAIN</button>
+</div>
+<div class="overlay" id="timeout-screen" style="display:none">
+  <h1>TIME'S UP!</h1><div class="sub" id="timeout-sub">LIVES REMAINING: 2</div>
+  <button class="btn" id="timeout-btn">TRY AGAIN</button>
+</div>
+<div class="overlay" id="gameover-screen" style="display:none">
+  <h1>GAME OVER</h1><div class="score-big" id="final-score">0</div>
+  <div class="sub">FINAL SCORE</div><button class="btn" id="restart-btn">PLAY AGAIN</button>
+</div>
+<div class="overlay" id="win-screen" style="display:none">
+  <h1>YOU WIN!</h1><div class="sub">ALL 10 LEVELS CLEARED</div>
+  <div class="score-big" id="win-score">0</div>
+  <button class="btn" id="winrestart-btn">PLAY AGAIN</button>
+</div>
+
+<script>
+// =============================================================================
+//  MARBLE MAYHEM — Rebuilt from scratch with authentic Marble Madness geometry
+// =============================================================================
+const canvas = document.getElementById('gc');
+const ctx = canvas.getContext('2d');
+function resize(){ canvas.width=window.innerWidth; canvas.height=window.innerHeight; }
+resize(); window.addEventListener('resize', resize);
+
+// ---------- ISO PROJECTION ---------------------------------------------------
+const TW=52, TH=26, TD=36;
+function isoProj(gx,gy,gz){ return { x:(gx-gy)*(TW/2), y:(gx+gy)*(TH/2)-gz*TD }; }
+let camX=0, camY=0;
+function toScr(gx,gy,gz){ const p=isoProj(gx,gy,gz); return {x:p.x+canvas.width/2+camX, y:p.y+canvas.height/2+camY}; }
+
+// ---------- TILE COLORS ------------------------------------------------------
+// Tile colors: top face is the color, sides are very dark (like screenshot)
+// Left face = darkest (shadow side), right face = slightly lighter dark
+const TC = {
+  normal:  {t:'#c8c8c8',l:'#2a2a2a',r:'#404040'},
+  checker: {t:'#cccccc',l:'#2a2a2a',r:'#404040'},
+  red:     {t:'#c82200',l:'#220500',r:'#3a0a00'},
+  yellow:  {t:'#d8c400',l:'#282000',r:'#3c3200'},
+  blue:    {t:'#1088cc',l:'#041830',r:'#082848'},
+  ice:     {t:'#c8eeff',l:'#1a3040',r:'#284858'},
+  green:   {t:'#228833',l:'#061408',r:'#0e2212'},
+  dark:    {t:'#445566',l:'#0a1018',r:'#141e28'},
+  gold:    {t:'#d8a800',l:'#241800',r:'#382800'},
+  purple:  {t:'#8820cc',l:'#180428',r:'#280840'},
+  lava:    {t:'#cc3800',l:'#200400',r:'#340800'},
+  white:   {t:'#eeeeee',l:'#2a2a2a',r:'#404040'},
+  start:   {t:'#28cc3e',l:'#041a08',r:'#0a2a10'},
+  goal:    {t:'#ffcc00',l:'#241800',r:'#382800'},
+};
+
+function drawTile(gx,gy,gz,type,ca){
+  const {x,y}=toScr(gx,gy,gz);
+  const hw=TW/2, hh=TH/2;
+  const c=TC[type]||TC.normal;
+  let top = c.t;
+  if(type==='checker') top = ca ? '#b0b0b0' : '#e8e8e8';
+  const DEEP=canvas.height;
+
+  // Left face — clipped to column, and clipped so it never rises above the top face
+  ctx.save();
+  ctx.beginPath();
+  // Column clip: parallelogram from tile edge down to screen bottom
+  ctx.moveTo(x-hw, y);
+  ctx.lineTo(x,    y+hh);
+  ctx.lineTo(x,    canvas.height+10);
+  ctx.lineTo(x-hw, canvas.height+10);
+  ctx.closePath();
+  ctx.clip();
+  ctx.beginPath();
+  ctx.moveTo(x-hw, y);
+  ctx.lineTo(x,    y+hh);
+  ctx.lineTo(x,    y+hh+DEEP);
+  ctx.lineTo(x-hw, y+DEEP);
+  ctx.closePath();
+  ctx.fillStyle=c.l; ctx.fill();
+  ctx.restore();
+
+  // Right face — clipped to column
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x+hw, y);
+  ctx.lineTo(x,    y+hh);
+  ctx.lineTo(x,    canvas.height+10);
+  ctx.lineTo(x+hw, canvas.height+10);
+  ctx.closePath();
+  ctx.clip();
+  ctx.beginPath();
+  ctx.moveTo(x,    y+hh);
+  ctx.lineTo(x+hw, y);
+  ctx.lineTo(x+hw, y+DEEP);
+  ctx.lineTo(x,    y+hh+DEEP);
+  ctx.closePath();
+  ctx.fillStyle=c.r; ctx.fill();
+  ctx.restore();
+
+  // Top face — drawn after sides so it always covers its own side edges
+  ctx.beginPath();
+  ctx.moveTo(x,    y-hh);
+  ctx.lineTo(x+hw, y);
+  ctx.lineTo(x,    y+hh);
+  ctx.lineTo(x-hw, y);
+  ctx.closePath();
+  ctx.fillStyle=top; ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,0.35)'; ctx.lineWidth=0.8; ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x,y-hh); ctx.lineTo(x+hw,y);
+  ctx.strokeStyle='rgba(255,255,255,0.22)'; ctx.lineWidth=1; ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x,y-hh); ctx.lineTo(x-hw,y);
+  ctx.strokeStyle='rgba(255,255,255,0.10)'; ctx.lineWidth=1; ctx.stroke();
+}
+
+// ---------- MARBLE DRAWING ---------------------------------------------------
+function drawMarble(sx,sy,r,c1,c2,glow,roll){
+  const g2=ctx.createRadialGradient(sx,sy,r*0.1,sx,sy,r*1.9);
+  g2.addColorStop(0,glow+'55'); g2.addColorStop(1,'transparent');
+  ctx.beginPath(); ctx.arc(sx,sy,r*1.9,0,Math.PI*2); ctx.fillStyle=g2; ctx.fill();
+  const sp=roll?Date.now()/220:0;
+  const grad=ctx.createRadialGradient(sx-r*.35,sy-r*.35,r*.05,sx+r*.1,sy+r*.1,r);
+  grad.addColorStop(0,c1); grad.addColorStop(.55,c2); grad.addColorStop(1,'#000a18');
+  ctx.beginPath(); ctx.arc(sx,sy,r,0,Math.PI*2); ctx.fillStyle=grad; ctx.fill();
+  if(roll){
+    ctx.save(); ctx.beginPath(); ctx.arc(sx,sy,r,0,Math.PI*2); ctx.clip();
+    ctx.strokeStyle='rgba(255,255,255,0.13)'; ctx.lineWidth=r*.42;
+    ctx.beginPath();
+    ctx.moveTo(sx+Math.cos(sp)*r*2,sy+Math.sin(sp)*r*2);
+    ctx.lineTo(sx-Math.cos(sp)*r*2,sy-Math.sin(sp)*r*2);
+    ctx.stroke(); ctx.restore();
+  }
+  ctx.beginPath(); ctx.arc(sx-r*.33,sy-r*.33,r*.22,0,Math.PI*2);
+  ctx.fillStyle='rgba(255,255,255,0.76)'; ctx.fill();
+  ctx.beginPath(); ctx.arc(sx-r*.1,sy-r*.5,r*.1,0,Math.PI*2);
+  ctx.fillStyle='rgba(255,255,255,0.52)'; ctx.fill();
+}
+
+// =============================================================================
+//  LEVEL DEFINITIONS
+//  Geometry matches Marble Madness: vertical scrolling, narrow bridges,
+//  wide platform → thin strip → ramp → platform chains
+// =============================================================================
+const LEVEL_NAMES=['BEGINNER\'S LUCK','THE DESCENT','CHECKERED MAZE',
+  'ICE WORLD','RED LABYRINTH','GOLDEN PEAKS','PURPLE HAZE',
+  'DARK ABYSS','THE GAUNTLET','FINAL CHAOS'];
+const LEVEL_TIMES=[62,58,56,52,50,46,44,40,36,33];
+
+function R(x,y,z,len,t){ const a=[]; for(let i=0;i<len;i++) a.push([x+i,y,z,t]); return a; }
+function C(x,y,z,len,t){ const a=[]; for(let i=0;i<len;i++) a.push([x,y+i,z,t]); return a; }
+function B(x,y,z,w,h,t){ const a=[]; for(let dx=0;dx<w;dx++) for(let dy=0;dy<h;dy++) a.push([x+dx,y+dy,z,t]); return a; }
+// Descending ramp along Y: each step y+1 = z-1
+function RampY(x,y,z,len,w,t){ const a=[]; for(let i=0;i<len;i++) for(let j=0;j<w;j++) a.push([x+j,y+i,z-i,t]); return a; }
+// Descending ramp along X: each step x+1 = z-1
+function RampX(x,y,z,len,h,t){ const a=[]; for(let i=0;i<len;i++) for(let j=0;j<h;j++) a.push([x+i,y+j,z-i,t]); return a; }
+
+// ── Level 1 ─ Beginner's Luck ─────────────────────────────────────────────
+function L1(){
+  const tiles=[
+    ...B(-2,0,0,5,4,'start'),          // wide start pad
+    ...RampY(-1,4,0,5,3,'normal'),     // 3-wide ramp descends 5 steps
+    ...B(-1,9,-4,5,3,'normal'),        // mid platform
+    ...C(1,12,-4,7,'normal'),          // narrow 1-wide bridge
+    ...B(0,19,-4,3,3,'normal'),        // small platform
+    ...RampY(0,22,-4,4,2,'normal'),    // 2-wide ramp
+    ...B(-1,26,-7,5,3,'normal'),       // platform
+    ...C(1,29,-7,6,'normal'),          // 1-wide bridge
+    ...B(0,35,-7,3,2,'normal'),        // tiny platform
+    ...RampY(-1,37,-7,4,3,'normal'),   // ramp
+    ...B(-1,41,-10,5,4,'goal'),        // goal
+  ];
+  return {
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:1,gy:42,gz:-10},
+    enemies:[
+      {type:'rollerball',gx:0,gy:10,gz:-4,small:true,path:[{gx:-1,gy:10,gz:-4},{gx:3,gy:10,gz:-4}]},
+      {type:'rollerball',gx:2,gy:11,gz:-4,small:true,path:[{gx:-1,gy:11,gz:-4},{gx:3,gy:11,gz:-4}]},
+      {type:'inchworm',gx:1,gy:15,gz:-4,path:[{gx:1,gy:13,gz:-4},{gx:1,gy:18,gz:-4}]},
+      {type:'bouncer',gx:1,gy:21,gz:-4,path:[{gx:0,gy:20,gz:-4},{gx:2,gy:20,gz:-4}]},
+    ]
+  };
+}
+
+// ── Level 2 ─ The Descent ─────────────────────────────────────────────────
+function L2(){
+  const tiles=[
+    ...B(-2,0,0,5,3,'normal'),
+    // Narrow 2-wide straight down
+    ...C(0,3,0,5,'normal'), ...C(1,3,0,5,'normal'),
+    // Right turn
+    ...R(2,7,0,5,'normal'), ...R(2,8,0,5,'normal'),
+    // Down again
+    ...C(6,9,0,5,'normal'), ...C(7,9,0,5,'normal'),
+    // Left turn - ramp
+    ...RampX(4,13,0,5,2,'normal'),
+    // Platform
+    ...B(-1,13,-4,5,3,'normal'),
+    // 1-wide bridge heading down
+    ...C(0,16,-4,8,'normal'),
+    // Left-turn platform
+    ...B(-4,24,-4,5,3,'normal'),
+    // Zigzag: right along x
+    ...R(-4,27,-4,7,'normal'),
+    // Down again narrow
+    ...C(2,27,-4,8,'normal'), ...C(3,27,-4,8,'normal'),
+    // Platform
+    ...B(1,35,-4,5,3,'normal'),
+    // Ramp
+    ...RampY(1,38,-4,5,3,'normal'),
+    // Goal
+    ...B(0,43,-8,5,4,'goal'),
+  ];
+  return {
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:2,gy:44,gz:-8},
+    enemies:[
+      {type:'rollerball',gx:0,gy:4,gz:0,small:true,path:[{gx:0,gy:3,gz:0},{gx:0,gy:7,gz:0}]},
+      {type:'rollerball',gx:1,gy:5,gz:0,small:true,path:[{gx:1,gy:3,gz:0},{gx:1,gy:7,gz:0}]},
+      {type:'crab',gx:3,gy:10,gz:0,path:[{gx:2,gy:9,gz:0},{gx:6,gy:9,gz:0}]},
+      {type:'slinky',gx:6,gy:12,gz:0,path:[{gx:6,gy:9,gz:0},{gx:7,gy:13,gz:0}]},
+      {type:'inchworm',gx:0,gy:20,gz:-4,path:[{gx:0,gy:17,gz:-4},{gx:0,gy:23,gz:-4}]},
+      {type:'ghost',gx:-2,gy:26,gz:-4,path:[{gx:-4,gy:26,gz:-4},{gx:0,gy:26,gz:-4}]},
+      {type:'zigzagger',gx:2,gy:31,gz:-4,path:[{gx:1,gy:28,gz:-4},{gx:3,gy:34,gz:-4}]},
+    ]
+  };
+}
+
+// ── Level 3 ─ Checkered Maze ─────────────────────────────────────────────
+function L3(){
+  const t='checker';
+  const tiles=[
+    ...B(-2,0,0,5,3,t),
+    // Corridor 2-wide heading down
+    ...C(-1,3,0,6,t), ...C(0,3,0,6,t),
+    // Wide platform
+    ...B(-2,9,0,5,3,t),
+    // RIGHT narrow 1-wide
+    ...C(2,12,0,7,t),
+    // Platform
+    ...B(1,19,0,4,3,t),
+    // LEFT turn 1-wide
+    ...C(-1,22,0,7,t),
+    // Platform
+    ...B(-3,29,0,5,3,t),
+    // Ramp descend
+    ...RampY(-2,32,0,6,3,t),
+    // 1-wide bridge
+    ...C(0,38,-5,8,t),
+    // Platform
+    ...B(-1,46,-5,4,3,t),
+    // Ramp
+    ...RampY(-1,49,-5,4,3,t),
+    // Goal
+    ...B(-2,53,-8,5,4,'goal'),
+  ];
+  return {
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:0,gy:54,gz:-8},
+    enemies:[
+      {type:'rollerball',gx:-1,gy:4,gz:0,small:true,path:[{gx:-1,gy:3,gz:0},{gx:-1,gy:8,gz:0}]},
+      {type:'rollerball',gx:0,gy:6,gz:0,small:true,path:[{gx:0,gy:3,gz:0},{gx:0,gy:8,gz:0}]},
+      {type:'spinner',gx:0,gy:11,gz:0,path:[{gx:-2,gy:10,gz:0},{gx:2,gy:11,gz:0}]},
+      {type:'zigzagger',gx:2,gy:15,gz:0,path:[{gx:2,gy:13,gz:0},{gx:2,gy:18,gz:0}]},
+      {type:'bouncer',gx:-1,gy:31,gz:0,path:[{gx:-3,gy:30,gz:0},{gx:1,gy:31,gz:0}]},
+      {type:'ghost',gx:0,gy:42,gz:-5,path:[{gx:0,gy:38,gz:-5},{gx:0,gy:45,gz:-5}]},
+      {type:'crab',gx:0,gy:48,gz:-5,path:[{gx:-1,gy:47,gz:-5},{gx:2,gy:48,gz:-5}]},
+    ]
+  };
+}
+
+// ── Level 4 ─ Ice World ───────────────────────────────────────────────────
+function L4(){
+  const i='ice';
+  const tiles=[
+    ...B(-3,0,0,7,4,i),
+    // 1-wide bridge
+    ...C(0,4,0,6,i),
+    // Platform
+    ...B(-2,10,0,5,3,i),
+    // Wide ramp
+    ...RampY(-2,13,0,7,5,i),
+    // Thin 2-wide bridge going left
+    ...R(-8,20,-6,8,i), ...R(-8,21,-6,8,i),
+    // Platform
+    ...B(-10,22,-6,4,4,i),
+    // Ramp heading left+down  (manual diagonal)
+    [-10,26,-6,i],[-11,27,-7,i],[-12,28,-8,i],
+    [-10,26,-6,i],[-11,26,-6,i],
+    [-11,27,-7,i],[-12,27,-7,i],
+    [-12,28,-8,i],[-13,28,-8,i],
+    // Platform
+    ...B(-14,29,-8,5,4,i),
+    // 1-wide bridge
+    ...C(-12,33,-8,7,i),
+    // Turn right
+    ...R(-12,40,-8,6,i), ...R(-12,41,-8,6,i),
+    // Ramp
+    ...RampY(-7,42,-8,5,3,i),
+    // Goal
+    ...B(-8,47,-12,5,4,'goal'),
+  ];
+  return {
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:-6,gy:48,gz:-12}, icePhysics:true,
+    enemies:[
+      {type:'iceball',gx:0,gy:6,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:0,gy:9,gz:0}]},
+      {type:'iceball',gx:-3,gy:12,gz:0,small:true,path:[{gx:-2,gy:11,gz:0},{gx:2,gy:12,gz:0}]},
+      {type:'iceball',gx:-5,gy:22,gz:-6,small:true,path:[{gx:-8,gy:21,gz:-6},{gx:-1,gy:21,gz:-6}]},
+      {type:'bouncer',gx:-11,gy:25,gz:-6,path:[{gx:-10,gy:23,gz:-6},{gx:-7,gy:25,gz:-6}]},
+      {type:'slinky',gx:-12,gy:36,gz:-8,path:[{gx:-12,gy:33,gz:-8},{gx:-12,gy:39,gz:-8}]},
+      {type:'firefly',gx:-9,gy:44,gz:-8,path:[{gx:-12,gy:43,gz:-8},{gx:-7,gy:44,gz:-8}]},
+    ]
+  };
+}
+
+// ── Level 5 ─ Red Labyrinth ───────────────────────────────────────────────
+function L5(){
+  const tiles=[];
+  // Start
+  for(let x=-2;x<=2;x++) for(let y=0;y<3;y++) tiles.push([x,y,0,'red']);
+  // 2-wide corridor down
+  for(let y=3;y<9;y++){tiles.push([0,y,0,'red']);tiles.push([1,y,0,'yellow']);}
+  // Platform
+  for(let x=-1;x<=4;x++) for(let y=9;y<12;y++) tiles.push([x,y,0,'red']);
+  // 2-wide bridge going right
+  for(let x=4;x<=10;x++){tiles.push([x,9,0,'yellow']);tiles.push([x,10,0,'red']);}
+  // Ramp going right (3-high, 6 steps)
+  for(let s=0;s<6;s++) for(let j=0;j<2;j++) tiles.push([10+s,9+j,-s,'red']);
+  // 1-wide bridge
+  for(let y=9;y<18;y++) tiles.push([15,y,-5,'red'],[16,y,-5,'yellow']);
+  // Platform
+  for(let x=13;x<=18;x++) for(let y=18;y<21;y++) tiles.push([x,y,-5,'red']);
+  // Left-zigzag 1-wide
+  for(let y=21;y<28;y++) tiles.push([13,y,-5,'yellow']);
+  // Turn right across
+  for(let x=13;x<=18;x++) tiles.push([x,28,-5,'red']);
+  // 1-wide right wall
+  for(let y=28;y<35;y++) tiles.push([18,y,-5,'yellow']);
+  // Platform
+  for(let x=16;x<=21;x++) for(let y=35;y<38;y++) tiles.push([x,y,-5,'red']);
+  // Ramp
+  for(let s=0;s<5;s++) for(let j=0;j<3;j++) tiles.push([16+j,38+s,-5-s,'red']);
+  // 2-wide bridge
+  for(let y=43;y<51;y++){tiles.push([17,y,-9,'red']);tiles.push([18,y,-9,'yellow']);}
+  // Goal
+  for(let x=15;x<=21;x++) for(let y=51;y<55;y++) tiles.push([x,y,-9,'goal']);
+  return {
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:18,gy:52,gz:-9},
+    enemies:[
+      {type:'rollerball',gx:0,gy:5,gz:0,small:true,path:[{gx:0,gy:3,gz:0},{gx:1,gy:8,gz:0}]},
+      {type:'rollerball',gx:1,gy:4,gz:0,small:true,path:[{gx:0,gy:3,gz:0},{gx:1,gy:8,gz:0}]},
+      {type:'crab',gx:2,gy:10,gz:0,path:[{gx:-1,gy:10,gz:0},{gx:4,gy:10,gz:0}]},
+      {type:'zigzagger',gx:7,gy:9,gz:0,path:[{gx:4,gy:9,gz:0},{gx:9,gy:9,gz:0}]},
+      {type:'skullhead',gx:15,gy:13,gz:-5,path:[{gx:15,gy:9,gz:-5},{gx:16,gy:17,gz:-5}]},
+      {type:'ghost',gx:13,gy:24,gz:-5,path:[{gx:13,gy:21,gz:-5},{gx:13,gy:27,gz:-5}]},
+      {type:'spinner',gx:18,gy:31,gz:-5,path:[{gx:18,gy:28,gz:-5},{gx:18,gy:34,gz:-5}]},
+      {type:'firefly',gx:17,gy:47,gz:-9,path:[{gx:17,gy:43,gz:-9},{gx:18,gy:50,gz:-9}]},
+    ]
+  };
+}
+
+// ── Level 6 ─ Golden Peaks ────────────────────────────────────────────────
+function L6(){
+  const tiles=[
+    ...B(-3,0,0,7,4,'gold'),
+    // 1-wide bridge
+    ...C(0,4,0,7,'gold'),
+    // Floating platform
+    ...B(-1,11,0,4,3,'gold'),
+    // 2-wide bridge
+    ...C(-1,14,0,8,'gold'),...C(0,14,0,8,'gold'),
+    // Platform
+    ...B(-2,22,0,5,3,'gold'),
+    // Ramp (wide)
+    ...RampY(-2,25,0,7,5,'gold'),
+    // 1-wide bridge
+    ...C(0,32,-6,9,'gold'),
+    // Platform
+    ...B(-2,41,-6,5,3,'gold'),
+    // Turn left 1-wide
+    ...R(-6,42,-6,5,'gold'),
+    // 2-wide bridge heading down
+    ...C(-6,43,-6,9,'gold'),...C(-5,43,-6,9,'gold'),
+    // Platform
+    ...B(-8,52,-6,5,3,'gold'),
+    // Ramp
+    ...RampY(-7,55,-6,5,4,'gold'),
+    // 1-wide bridge to goal
+    ...C(-5,60,-10,5,'gold'),
+    // Goal
+    ...B(-7,65,-10,5,4,'goal'),
+  ];
+  return {
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:-5,gy:66,gz:-10},
+    enemies:[
+      {type:'rollerball',gx:0,gy:6,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:0,gy:10,gz:0}]},
+      {type:'bouncer',gx:-1,gy:13,gz:0,path:[{gx:-2,gy:12,gz:0},{gx:2,gy:13,gz:0}]},
+      {type:'spinner',gx:0,gy:24,gz:0,path:[{gx:-2,gy:23,gz:0},{gx:2,gy:24,gz:0}]},
+      {type:'inchworm',gx:0,gy:35,gz:-6,path:[{gx:0,gy:32,gz:-6},{gx:0,gy:40,gz:-6}]},
+      {type:'skullhead',gx:-1,gy:43,gz:-6,path:[{gx:-2,gy:42,gz:-6},{gx:1,gy:43,gz:-6}]},
+      {type:'crab',gx:-5,gy:47,gz:-6,path:[{gx:-6,gy:43,gz:-6},{gx:-4,gy:51,gz:-6}]},
+      {type:'ghost',gx:-5,gy:62,gz:-10,path:[{gx:-5,gy:60,gz:-10},{gx:-5,gy:64,gz:-10}]},
+    ]
+  };
+}
+
+// ── Level 7 ─ Purple Haze ─────────────────────────────────────────────────
+function L7(){
+  const tiles=[
+    ...B(-2,0,0,5,3,'purple'),
+    // Narrow 2-wide diagonal descent
+    ...RampY(-1,3,0,7,2,'purple'),
+    // Platform
+    ...B(-2,10,-6,5,3,'purple'),
+    // Hard LEFT turn 1-wide bridge
+    ...R(-6,11,-6,5,'purple'),
+    // Down 1-wide
+    ...C(-6,12,-6,9,'purple'),
+    // Platform
+    ...B(-8,21,-6,5,3,'purple'),
+    // Right turn 2-wide
+    ...R(-8,22,-6,8,'purple'),...R(-8,23,-6,8,'purple'),
+    // Down ramp
+    ...RampY(-1,24,-6,6,3,'purple'),
+    // 1-wide bridge
+    ...C(0,30,-11,10,'purple'),
+    // Platform
+    ...B(-1,40,-11,4,3,'purple'),
+    // Left 1-wide long bridge
+    ...R(-6,41,-11,6,'purple'),
+    // Down 2-wide
+    ...C(-6,41,-11,10,'purple'),...C(-5,41,-11,10,'purple'),
+    // Platform
+    ...B(-8,51,-11,5,3,'purple'),
+    // Ramp
+    ...RampY(-7,54,-11,5,4,'purple'),
+    // Goal
+    ...B(-8,59,-15,5,4,'goal'),
+  ];
+  return {
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:-6,gy:60,gz:-15},
+    enemies:[
+      {type:'ghost',gx:0,gy:5,gz:-1,path:[{gx:-1,gy:4,gz:0},{gx:0,gy:9,gz:-5}]},
+      {type:'rollerball',gx:-1,gy:11,gz:-6,small:true,path:[{gx:-2,gy:11,gz:-6},{gx:2,gy:11,gz:-6}]},
+      {type:'slinky',gx:-6,gy:15,gz:-6,path:[{gx:-6,gy:12,gz:-6},{gx:-6,gy:20,gz:-6}]},
+      {type:'crab',gx:-4,gy:22,gz:-6,path:[{gx:-8,gy:22,gz:-6},{gx:-1,gy:22,gz:-6}]},
+      {type:'zigzagger',gx:0,gy:25,gz:-7,path:[{gx:-1,gy:24,gz:-6},{gx:2,gy:29,gz:-11}]},
+      {type:'skullhead',gx:0,gy:34,gz:-11,path:[{gx:0,gy:30,gz:-11},{gx:0,gy:39,gz:-11}]},
+      {type:'spinner',gx:-2,gy:42,gz:-11,path:[{gx:-3,gy:40,gz:-11},{gx:0,gy:42,gz:-11}]},
+      {type:'firefly',gx:-6,gy:45,gz:-11,path:[{gx:-6,gy:41,gz:-11},{gx:-5,gy:50,gz:-11}]},
+      {type:'bouncer',gx:-5,gy:56,gz:-11,path:[{gx:-8,gy:54,gz:-11},{gx:-3,gy:56,gz:-11}]},
+    ]
+  };
+}
+
+// ── Level 8 ─ Dark Abyss ──────────────────────────────────────────────────
+function L8(){
+  const tiles=[
+    ...B(-2,0,0,5,3,'dark'),
+    // Isolated 2x2 stepping stones with 1-tile connectors
+    ...B(-1,4,0,2,2,'dark'),
+    [0,6,0,'dark'],
+    ...B(1,7,-1,2,2,'dark'),
+    [1,9,-1,'dark'],
+    ...B(-1,10,-2,2,2,'dark'),
+    [0,12,-2,'dark'],
+    ...B(1,13,-3,2,2,'dark'),
+    [1,15,-3,'dark'],[0,16,-3,'dark'],
+    ...B(-1,17,-4,2,2,'dark'),
+    [0,19,-4,'dark'],
+    ...B(0,20,-5,2,2,'dark'),
+    [1,22,-5,'dark'],
+    ...B(0,23,-5,2,2,'dark'),
+    // Narrow corridor
+    ...C(0,25,-5,8,'dark'),...C(1,25,-5,8,'dark'),
+    // Platform
+    ...B(-1,33,-5,4,3,'dark'),
+    // 1-wide bridge
+    ...C(0,36,-5,9,'dark'),
+    // Ramp
+    ...RampY(-1,45,-5,5,3,'dark'),
+    // 1-wide bridge to goal
+    ...C(0,50,-9,7,'dark'),
+    // Goal
+    ...B(-1,57,-9,4,4,'goal'),
+  ];
+  return {
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:0,gy:58,gz:-9},
+    enemies:[
+      {type:'ghost',gx:0,gy:5,gz:0,path:[{gx:-1,gy:5,gz:0},{gx:1,gy:5,gz:0}]},
+      {type:'skullhead',gx:1,gy:8,gz:-1,path:[{gx:1,gy:7,gz:-1},{gx:2,gy:8,gz:-1}]},
+      {type:'rollerball',gx:0,gy:14,gz:-3,small:true,path:[{gx:-1,gy:13,gz:-3},{gx:2,gy:14,gz:-3}]},
+      {type:'zigzagger',gx:1,gy:18,gz:-4,path:[{gx:0,gy:17,gz:-4},{gx:1,gy:19,gz:-4}]},
+      {type:'ghost',gx:0,gy:22,gz:-5,path:[{gx:0,gy:20,gz:-5},{gx:1,gy:24,gz:-5}]},
+      {type:'inchworm',gx:0,gy:29,gz:-5,path:[{gx:0,gy:26,gz:-5},{gx:1,gy:32,gz:-5}]},
+      {type:'firefly',gx:0,gy:39,gz:-5,path:[{gx:0,gy:36,gz:-5},{gx:0,gy:44,gz:-5}]},
+      {type:'bouncer',gx:0,gy:53,gz:-9,path:[{gx:0,gy:50,gz:-9},{gx:0,gy:56,gz:-9}]},
+    ]
+  };
+}
+
+// ── Level 9 ─ The Gauntlet ────────────────────────────────────────────────
+function L9(){
+  const tiles=[
+    ...B(-2,0,0,5,3,'normal'),
+    // Maze: right 2-wide
+    ...R(2,1,0,6,'normal'),...R(2,2,0,6,'normal'),
+    // Down 2-wide
+    ...C(7,1,0,6,'normal'),...C(8,1,0,6,'normal'),
+    // Left 2-wide
+    ...R(1,6,0,8,'normal'),...R(1,7,0,8,'normal'),
+    // Down 2-wide
+    ...C(1,7,0,7,'normal'),...C(0,7,0,7,'normal'),
+    // Right 2-wide
+    ...R(0,13,0,8,'normal'),...R(0,14,0,8,'normal'),
+    // Down 2-wide
+    ...C(7,13,0,7,'normal'),...C(8,13,0,7,'normal'),
+    // Left 2-wide
+    ...R(0,19,0,9,'normal'),...R(0,20,0,9,'normal'),
+    // Ramp
+    ...RampY(-1,21,0,6,3,'normal'),
+    // 1-wide bridge
+    ...C(0,27,-5,10,'normal'),
+    // Platform
+    ...B(-1,37,-5,4,3,'normal'),
+    // Ramp down
+    ...RampY(-1,40,-5,5,4,'normal'),
+    // 1-wide bridge
+    ...C(0,45,-9,9,'normal'),
+    // Goal
+    ...B(-1,54,-9,4,4,'goal'),
+  ];
+  return {
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:0,gy:55,gz:-9},
+    enemies:[
+      {type:'rollerball',gx:4,gy:1,gz:0,small:true,path:[{gx:2,gy:1,gz:0},{gx:7,gy:1,gz:0}]},
+      {type:'rollerball',gx:4,gy:2,gz:0,small:true,path:[{gx:2,gy:2,gz:0},{gx:7,gy:2,gz:0}]},
+      {type:'crab',gx:7,gy:4,gz:0,path:[{gx:7,gy:1,gz:0},{gx:8,gy:6,gz:0}]},
+      {type:'slinky',gx:4,gy:7,gz:0,path:[{gx:1,gy:7,gz:0},{gx:8,gy:7,gz:0}]},
+      {type:'zigzagger',gx:1,gy:10,gz:0,path:[{gx:0,gy:7,gz:0},{gx:1,gy:13,gz:0}]},
+      {type:'spinner',gx:5,gy:14,gz:0,path:[{gx:0,gy:14,gz:0},{gx:8,gy:14,gz:0}]},
+      {type:'skullhead',gx:4,gy:19,gz:0,path:[{gx:0,gy:19,gz:0},{gx:8,gy:20,gz:0}]},
+      {type:'ghost',gx:0,gy:31,gz:-5,path:[{gx:0,gy:27,gz:-5},{gx:0,gy:36,gz:-5}]},
+      {type:'firefly',gx:0,gy:40,gz:-5,path:[{gx:-1,gy:40,gz:-5},{gx:2,gy:40,gz:-5}]},
+      {type:'bouncer',gx:0,gy:50,gz:-9,path:[{gx:0,gy:45,gz:-9},{gx:0,gy:53,gz:-9}]},
+    ]
+  };
+}
+
+// ── Level 10 ─ Final Chaos ─────────────────────────────────────────────────
+function L10(){
+  const tiles=[
+    ...B(-2,0,0,5,3,'normal'),
+    // Multi-color maze
+    ...R(2,1,0,5,'red'),...R(2,2,0,5,'yellow'),
+    ...C(6,1,0,5,'red'),...C(7,1,0,5,'yellow'),
+    ...R(0,5,0,7,'yellow'),...R(0,6,0,7,'red'),
+    ...C(0,6,0,6,'purple'),...C(1,6,0,6,'purple'),
+    ...R(0,11,0,8,'gold'),...R(0,12,0,8,'gold'),
+    ...C(7,11,0,7,'red'),...C(8,11,0,7,'yellow'),
+    ...R(-1,17,0,10,'checker'),...R(-1,18,0,10,'checker'),
+    ...C(-1,18,0,6,'red'),...C(0,18,0,6,'yellow'),
+    // Ramp
+    ...RampY(-1,24,0,7,4,'red'),
+    // 1-wide bridge
+    ...C(1,31,-6,10,'gold'),
+    // Platform
+    ...B(0,41,-6,4,3,'purple'),
+    // Multiple enemies gauntlet 1-wide bridge
+    ...C(1,44,-6,10,'purple'),
+    // Ramp
+    ...RampY(0,54,-6,5,4,'dark'),
+    // 1-wide super-narrow bridge
+    ...C(1,59,-10,10,'dark'),
+    // Goal
+    ...B(-1,69,-10,5,4,'goal'),
+  ];
+  return {
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:1,gy:70,gz:-10},
+    enemies:[
+      {type:'rollerball',gx:4,gy:1,gz:0,small:true,path:[{gx:2,gy:1,gz:0},{gx:6,gy:1,gz:0}]},
+      {type:'rollerball',gx:4,gy:2,gz:0,small:true,path:[{gx:2,gy:2,gz:0},{gx:6,gy:2,gz:0}]},
+      {type:'crab',gx:7,gy:3,gz:0,path:[{gx:6,gy:1,gz:0},{gx:7,gy:5,gz:0}]},
+      {type:'zigzagger',gx:3,gy:6,gz:0,path:[{gx:0,gy:6,gz:0},{gx:6,gy:6,gz:0}]},
+      {type:'spinner',gx:3,gy:12,gz:0,path:[{gx:0,gy:11,gz:0},{gx:7,gy:12,gz:0}]},
+      {type:'skullhead',gx:8,gy:14,gz:0,path:[{gx:7,gy:11,gz:0},{gx:8,gy:17,gz:0}]},
+      {type:'ghost',gx:0,gy:19,gz:0,path:[{gx:-1,gy:18,gz:0},{gx:0,gy:23,gz:0}]},
+      {type:'slinky',gx:1,gy:27,gz:-1,path:[{gx:0,gy:25,gz:0},{gx:2,gy:30,gz:-5}]},
+      {type:'bouncer',gx:1,gy:35,gz:-6,path:[{gx:0,gy:32,gz:-6},{gx:3,gy:35,gz:-6}]},
+      {type:'inchworm',gx:1,gy:47,gz:-6,path:[{gx:1,gy:44,gz:-6},{gx:1,gy:53,gz:-6}]},
+      {type:'firefly',gx:1,gy:63,gz:-10,path:[{gx:1,gy:59,gz:-10},{gx:1,gy:68,gz:-10}]},
+    ]
+  };
+}
+
+function buildLevel(n){
+  const fns=[L1,L2,L3,L4,L5,L6,L7,L8,L9,L10];
+  const d=(fns[n]||L1)();
+  d.tiles=d.tiles.filter(t=>Array.isArray(t)&&t.length>=3&&typeof t[0]==='number'&&typeof t[1]==='number');
+  return d;
+}
+
+// =============================================================================
+//  ENEMY CLASSES
+// =============================================================================
+class Enemy{
+  constructor(def){
+    Object.assign(this,def);
+    this.t=Math.random()*0.5; this.dir=1; this.anim=0; this.dead=false;
+    // inchworm and small enemies are pushable (physics-enabled)
+    if(this.small || this.type==='inchworm'){
+      this.vx=0; this.vy=0; this.vz=0;
+      this.physX=this.gx; this.physY=this.gy; this.physZ=this.gz;
+      this.physEnabled=true;
+    }
+    // Chase enemies: rollerball, skullhead, crab, ghost actively hunt player
+    this.chases = ['rollerball','iceball','skullhead','ghost','crab'].includes(this.type);
+    // Path patrol bounds (used as roam limits even when chasing)
+    this.patrolA = (def.path&&def.path[0]) ? def.path[0] : {gx:def.gx,gy:def.gy,gz:def.gz};
+    this.patrolB = (def.path&&def.path[1]) ? def.path[1] : {gx:def.gx,gy:def.gy,gz:def.gz};
+  }
+  update(dt){
+    this.anim+=dt;
+    if(this.physEnabled) return; // small pushable enemies handled by physics engine
+
+    const sp=this._spd();
+
+    if(this.chases && player && !player.dead){
+      // Actively chase the player — no patrol clamping, they hunt freely
+      const dx=player.x-this.gx, dy=player.y-this.gy;
+      const d=Math.sqrt(dx*dx+dy*dy)||1;
+
+      // Accelerate toward player — build up speed like a charging ball
+      if(!this.cvx) this.cvx=0;
+      if(!this.cvy) this.cvy=0;
+      this.cvx += (dx/d)*sp*dt*4;
+      this.cvy += (dy/d)*sp*dt*4;
+      // Cap chase speed
+      const cs=Math.sqrt(this.cvx*this.cvx+this.cvy*this.cvy);
+      if(cs>sp){this.cvx*=sp/cs; this.cvy*=sp/cs;}
+      // Friction
+      this.cvx*=0.92; this.cvy*=0.92;
+
+      this.gx+=this.cvx*dt;
+      this.gy+=this.cvy*dt;
+
+      // Stay on the same gz as patrol zone
+      const midGz=(this.patrolA.gz+this.patrolB.gz)/2;
+      this.gz+=(midGz-this.gz)*0.08;
+
+      // Soft boundary — slow down near patrol edges but don't hard-clamp
+      const minX=Math.min(this.patrolA.gx,this.patrolB.gx)-1;
+      const maxX=Math.max(this.patrolA.gx,this.patrolB.gx)+1;
+      const minY=Math.min(this.patrolA.gy,this.patrolB.gy)-1;
+      const maxY=Math.max(this.patrolA.gy,this.patrolB.gy)+1;
+      if(this.gx<minX){this.gx=minX;this.cvx=Math.abs(this.cvx);}
+      if(this.gx>maxX){this.gx=maxX;this.cvx=-Math.abs(this.cvx);}
+      if(this.gy<minY){this.gy=minY;this.cvy=Math.abs(this.cvy);}
+      if(this.gy>maxY){this.gy=maxY;this.cvy=-Math.abs(this.cvy);}
+    } else {
+      // Patrol back and forth along path
+      if(!this.path||this.path.length<2) return;
+      this.t+=dt*sp*this.dir;
+      if(this.t>=1){this.t=1;this.dir=-1;}
+      if(this.t<=0){this.t=0;this.dir=1;}
+      const a=this.path[0],b=this.path[1];
+      this.gx=a.gx+(b.gx-a.gx)*this.t;
+      this.gy=a.gy+(b.gy-a.gy)*this.t;
+      this.gz=a.gz+(b.gz-a.gz)*this.t;
+    }
+  }
+  _spd(){return{rollerball:1.4,iceball:1.8,inchworm:.3,slinky:.6,bouncer:.8,
+    spinner:.5,ghost:1.0,zigzagger:1.2,crab:1.5,firefly:.7,skullhead:1.8}[this.type]||.6;}
+  drawZ(){
+    const z=this.physEnabled?this.physZ:this.gz;
+    if(this.type==='slinky') return z+Math.abs(Math.sin(this.anim*3))*.5;
+    if(this.type==='bouncer') return z+Math.abs(Math.sin(this.anim*4.5))*.7;
+    if(this.type==='firefly') return z+.6+Math.sin(this.anim*2)*.3;
+    if(this.type==='ghost') return z+Math.sin(this.anim)*.3;
+    return z;
+  }
+  pos(){return{gx:this.physEnabled?this.physX:this.gx,gy:this.physEnabled?this.physY:this.gy,gz:this.drawZ()};}
+  draw(){
+    const {gx,gy,gz}=this.pos();
+    const s=toScr(gx,gy,gz);
+    ctx.globalAlpha=this.type==='ghost'?(.44+Math.sin(this.anim*2)*.28):1;
+    if(this.small){drawMarble(s.x,s.y,9,'#ff9988','#cc2200','#ff4422',true);}
+    else{
+      switch(this.type){
+        case'rollerball': drawMarble(s.x,s.y,12,'#ff7766','#cc2200','#ff4422',true); break;
+        case'iceball':    drawMarble(s.x,s.y,12,'#bbeeff','#4488cc','#77ccff',true); break;
+        case'inchworm':   this._inchworm(s.x,s.y); break;
+        case'slinky':     this._slinky(s.x,s.y); break;
+        case'bouncer':    this._bouncer(s.x,s.y); break;
+        case'spinner':    this._spinner(s.x,s.y); break;
+        case'ghost':      this._ghost(s.x,s.y); break;
+        case'zigzagger':  this._zigzag(s.x,s.y); break;
+        case'crab':       this._crab(s.x,s.y); break;
+        case'firefly':    this._firefly(s.x,s.y); break;
+        case'skullhead':  this._skull(s.x,s.y); break;
+        default: drawMarble(s.x,s.y,12,'#ff7766','#cc2200','#ff4422',true);
+      }
+    }
+    ctx.globalAlpha=1;
+  }
+  _inchworm(sx,sy){
+    ctx.save();
+    for(let i=0;i<5;i++){const ox=(i-2)*5.8;const oy=Math.sin(this.anim*5+i*.9)*4-4;
+      ctx.beginPath();ctx.arc(sx+ox,sy+oy,4.8,0,Math.PI*2);ctx.fillStyle=i%2?'#22aa22':'#44dd44';ctx.fill();}
+    ctx.beginPath();ctx.arc(sx+14,sy-5,2.8,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill();
+    ctx.beginPath();ctx.arc(sx+14.5,sy-5,1.4,0,Math.PI*2);ctx.fillStyle='#000';ctx.fill();
+    ctx.restore();
+  }
+  _slinky(sx,sy){
+    ctx.save();
+    for(let i=0;i<7;i++){const yy=sy+(i-3.5)*3.8+Math.sin(this.anim*6)*(i/7)*4;
+      const w=14-Math.abs(i-3.5)*.6;
+      ctx.beginPath();ctx.ellipse(sx,yy,w,3.4,0,0,Math.PI*2);
+      ctx.strokeStyle=`hsl(${190+i*18},82%,60%)`;ctx.lineWidth=3;ctx.stroke();}
+    ctx.restore();
+  }
+  _bouncer(sx,sy){
+    // Spikeball — dark spiky ball, no face
+    const rot=this.anim*2.2;
+    ctx.save();ctx.translate(sx,sy);
+    // Spikes
+    const nSpikes=8;
+    ctx.strokeStyle='#cc2200';ctx.lineWidth=3;
+    for(let i=0;i<nSpikes;i++){
+      const a=rot+i*(Math.PI*2/nSpikes);
+      ctx.beginPath();ctx.moveTo(Math.cos(a)*9,Math.sin(a)*9);ctx.lineTo(Math.cos(a)*17,Math.sin(a)*17);ctx.stroke();
+    }
+    // Core ball
+    const g=ctx.createRadialGradient(-3,-3,1,0,0,9);
+    g.addColorStop(0,'#882200');g.addColorStop(1,'#330000');
+    ctx.beginPath();ctx.arc(0,0,9,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
+    ctx.strokeStyle='#ff3300';ctx.lineWidth=1;ctx.stroke();
+    // Spike tips
+    ctx.fillStyle='#ff4400';
+    for(let i=0;i<nSpikes;i++){
+      const a=rot+i*(Math.PI*2/nSpikes);
+      ctx.beginPath();ctx.arc(Math.cos(a)*17,Math.sin(a)*17,2.5,0,Math.PI*2);ctx.fill();
+    }
+    ctx.restore();
+  }
+  _spinner(sx,sy){
+    const a=this.anim*3.8;ctx.save();ctx.translate(sx,sy);
+    for(let i=0;i<4;i++){ctx.rotate(a+i*Math.PI/2);
+      ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(0,-17);
+      ctx.strokeStyle=`hsl(${i*90},95%,55%)`;ctx.lineWidth=4.8;ctx.lineCap='round';ctx.stroke();
+      ctx.beginPath();ctx.arc(0,-17,3.8,0,Math.PI*2);ctx.fillStyle=`hsl(${i*90},95%,75%)`;ctx.fill();}
+    ctx.beginPath();ctx.arc(0,0,6,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill();
+    ctx.restore();
+  }
+  _ghost(sx,sy){
+    const fl=Math.sin(this.anim*1.8)*5;ctx.save();ctx.translate(sx,sy+fl);
+    ctx.beginPath();ctx.arc(0,-9,12,Math.PI,0);ctx.lineTo(12,6);
+    for(let i=0;i<3;i++){const bx=12-i*8;ctx.quadraticCurveTo(bx-3,13,bx-8,6);}
+    ctx.lineTo(-12,-9);ctx.closePath();
+    const g=ctx.createRadialGradient(0,-9,1,0,-9,17);
+    g.addColorStop(0,'rgba(190,185,255,.88)');g.addColorStop(1,'rgba(100,90,210,.15)');
+    ctx.fillStyle=g;ctx.fill();
+    ctx.fillStyle='rgba(10,0,70,.9)';
+    ctx.beginPath();ctx.ellipse(-3,-10,3.4,4,0,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.ellipse(4,-10,3.4,4,0,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+  _zigzag(sx,sy){
+    const ox=Math.sin(this.anim*9)*5;ctx.save();ctx.translate(sx+ox,sy);
+    ctx.beginPath();
+    for(let i=0;i<8;i++){const a=i*Math.PI/4+this.anim*2.6;const r=i%2?6:14;
+      if(!i)ctx.moveTo(Math.cos(a)*r,Math.sin(a)*r);else ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r);}
+    ctx.closePath();ctx.fillStyle='#ff44bb';ctx.fill();
+    ctx.strokeStyle='#ff99dd';ctx.lineWidth=1.6;ctx.stroke();ctx.restore();
+  }
+  _crab(sx,sy){
+    ctx.save();ctx.translate(sx,sy);const fl=this.dir>0?1:-1;ctx.scale(fl,1);
+    ctx.beginPath();ctx.ellipse(0,0,14,10,0,0,Math.PI*2);ctx.fillStyle='#dd4400';ctx.fill();
+    ctx.beginPath();ctx.ellipse(-16,-3,7.5,5,-0.4,0,Math.PI*2);ctx.fillStyle='#ff6622';ctx.fill();
+    ctx.beginPath();ctx.ellipse(16,-3,7.5,5,0.4,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='#cc3300';ctx.lineWidth=2.4;
+    for(let i=-1;i<=1;i++){const w=Math.sin(this.anim*7+i)*5;
+      ctx.beginPath();ctx.moveTo(i*5,-8);ctx.lineTo(i*9-w,-17);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(i*5,8);ctx.lineTo(i*9+w,17);ctx.stroke();}
+    ctx.fillStyle='#fff';
+    ctx.beginPath();ctx.arc(-5.5,-6,3.4,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.arc(5.5,-6,3.4,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#000';
+    ctx.beginPath();ctx.arc(-4.8,-6,1.6,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.arc(6.2,-6,1.6,0,Math.PI*2);ctx.fill();ctx.restore();
+  }
+  _firefly(sx,sy){
+    const gw=Math.abs(Math.sin(this.anim*3.5));ctx.save();ctx.translate(sx,sy);
+    const gr=ctx.createRadialGradient(0,0,1,0,0,24);
+    gr.addColorStop(0,`rgba(255,255,80,${gw*.65})`);gr.addColorStop(1,'transparent');
+    ctx.beginPath();ctx.arc(0,0,24,0,Math.PI*2);ctx.fillStyle=gr;ctx.fill();
+    ctx.beginPath();ctx.ellipse(0,0,7,12,0,0,Math.PI*2);ctx.fillStyle='rgba(80,210,40,.9)';ctx.fill();
+    ctx.globalAlpha=(.45+gw*.4)*ctx.globalAlpha;
+    ctx.beginPath();ctx.ellipse(-13,0,9.5,6,.5,0,Math.PI*2);ctx.fillStyle='rgba(180,255,160,.6)';ctx.fill();
+    ctx.beginPath();ctx.ellipse(13,0,9.5,6,-.5,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;
+    ctx.beginPath();ctx.arc(0,5.5,3.8,0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,255,120,${.5+gw*.5})`;ctx.fill();ctx.restore();
+  }
+  _skull(sx,sy){
+    const bob=Math.sin(this.anim*5.5)*2.2;ctx.save();ctx.translate(sx,sy+bob);
+    ctx.beginPath();ctx.arc(0,-4,13,0,Math.PI*2);ctx.fillStyle='#f0f0f0';ctx.fill();
+    ctx.strokeStyle='#999';ctx.lineWidth=1;ctx.stroke();
+    ctx.beginPath();ctx.moveTo(-10,5);ctx.lineTo(-10,13);ctx.lineTo(10,13);ctx.lineTo(10,5);
+    ctx.fillStyle='#ddd';ctx.fill();ctx.stroke();
+    ctx.fillStyle='#fff';
+    for(let i=0;i<4;i++) ctx.fillRect(-8+i*5,8.5,3.5,5.5);
+    ctx.fillStyle='#1a1a1a';
+    ctx.beginPath();ctx.ellipse(-4.5,-5.5,5,5,0,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.ellipse(4.5,-5.5,5,5,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#ff1111';
+    ctx.beginPath();ctx.arc(-4.5,-5.5,2,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.arc(4.5,-5.5,2,0,Math.PI*2);ctx.fill();ctx.restore();
+  }
+}
+
+// =============================================================================
+//  PHYSICS
+// =============================================================================
+let tileMap=[], goalPos=null;
+let player={x:0,y:0,z:0,vx:0,vy:0,vz:0,dead:false};
+let enemies=[];
+let state='start', currentLevel=0, lives=3, score=0, levelTime=60;
+let timerInt=null, iceLevel=false;
+
+function getTileBelow(px,py,pz){
+  let best=null;
+  for(const t of tileMap){
+    const dx=Math.abs(t[0]-px), dy=Math.abs(t[1]-py);
+    if(dx<0.72&&dy<0.72){
+      const s=t[2];
+      if(s<=pz+0.1&&(best===null||s>best)) best=s;
+    }
+  }
+  return best;
+}
+
+function physStep(dt){
+  if(player.dead) return;
+  const inputScale=iceLevel?2.0:3.0;
+  const friction=iceLevel?0.975:0.875;
+  // tbDX/tbDY are already in world space (see input section below)
+  player.vx+=tbDX*dt*inputScale*5.0;
+  player.vy+=tbDY*dt*inputScale*5.0;
+  const spd=Math.sqrt(player.vx**2+player.vy**2);
+  const ms=iceLevel?8:6;
+  if(spd>ms){player.vx*=ms/spd;player.vy*=ms/spd;}
+  player.vx*=friction; player.vy*=friction;
+  player.vz-=22*dt;
+  player.x+=player.vx*dt; player.y+=player.vy*dt; player.z+=player.vz*dt;
+  const gnd=getTileBelow(player.x,player.y,player.z);
+  if(gnd!==null&&player.z<=gnd){player.z=gnd;player.vz=0;}
+  if(player.z<-22){triggerDeath('fall');return;}
+
+  // Enemy interactions
+  for(const e of enemies){
+    if(e.dead) continue;
+    const ep=e.pos();
+    const dx=player.x-ep.gx,dy=player.y-ep.gy,dz=player.z-ep.gz;
+    const dist=Math.sqrt(dx*dx+dy*dy+dz*dz);
+    const PR=0.5, ER=e.small?0.38:0.55;
+    const hr=PR+ER;
+    if(dist<hr&&dist>0.01){
+      const nx=dx/dist,ny=dy/dist,nz=dz/dist;
+      const ov=hr-dist;
+      if(e.physEnabled){
+        // Proper physics: player (mass 2) pushes enemy (mass 1)
+        const pm=2, em=1;
+        const rvx=player.vx-e.vx,rvy=player.vy-e.vy,rvz=player.vz-e.vz;
+        const dot=rvx*nx+rvy*ny+rvz*nz;
+        if(dot<0){
+          const J=-(1+0.65)*dot/(1/pm+1/em);
+          player.vx+=J/pm*nx; player.vy+=J/pm*ny; player.vz+=J/pm*nz;
+          e.vx-=J/em*nx; e.vy-=J/em*ny; e.vz-=J/em*nz;
+        }
+        // Separate
+        player.x+=nx*ov*(em/(pm+em)); player.y+=ny*ov*(em/(pm+em));
+        e.physX-=nx*ov*(pm/(pm+em)); e.physY-=ny*ov*(pm/(pm+em));
+      } else {
+        // Chasing enemy rams into player — use relative velocity for realistic impact
+        // Enemy velocity from its chase momentum
+        const evx = e.cvx||0, evy = e.cvy||0;
+        const rvx2 = player.vx-evx, rvy2 = player.vy-evy;
+        const relDot = rvx2*nx + rvy2*ny;
+        // Base bump force + extra from enemy's charge momentum
+        const chargeMomentum = Math.sqrt(evx*evx+evy*evy);
+        const bump = 5.5 + chargeMomentum*1.8;
+        player.vx += nx*bump - rvx2*0.3;
+        player.vy += ny*bump - rvy2*0.3;
+        player.vz += 1.2; // slight upward to get over tile edges
+        // Separate player from enemy
+        player.x += nx*ov; player.y += ny*ov;
+      }
+    }
+  }
+
+  // Phys-enabled enemies
+  for(const e of enemies){
+    if(!e.physEnabled||e.dead) continue;
+    e.vz-=22*dt; e.vx*=0.87; e.vy*=0.87;
+    e.physX+=e.vx*dt; e.physY+=e.vy*dt; e.physZ+=e.vz*dt;
+    const eg=getTileBelow(e.physX,e.physY,e.physZ);
+    if(eg!==null&&e.physZ<=eg){e.physZ=eg;e.vz=0;}
+    if(e.physZ<-22) e.dead=true;
+    e.gx=e.physX; e.gy=e.physY; e.gz=e.physZ;
+  }
+
+  // Camera: smoothly keep player at (canvas.width/2, canvas.height*0.35) on screen
+  const tp=isoProj(player.x,player.y,player.z);
+  const targetCamX=-tp.x;
+  const targetCamY=(canvas.height*0.35 - canvas.height/2) - tp.y;
+  camX+=(targetCamX-camX)*0.12;
+  camY+=(targetCamY-camY)*0.12;
+
+  // Goal check
+  if(goalPos){
+    const d=Math.sqrt((player.x-goalPos.gx)**2+(player.y-goalPos.gy)**2+(player.z-goalPos.gz)**2);
+    if(d<1.15) levelComplete();
+  }
+}
+
+// =============================================================================
+//  RENDER
+// =============================================================================
+function render(ts){
+  ctx.fillStyle='#050508'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  // Stars
+  ctx.fillStyle='rgba(255,255,255,0.3)';
+  for(let i=0;i<55;i++) ctx.fillRect((i*137+33)%canvas.width,(i*91+17)%canvas.height,1.3,1.3);
+
+  if(state!=='playing'){requestAnimationFrame(render);return;}
+
+  // dt for this frame
+  const dt=1/60;
+
+  // ── True painter's order: everything sorted together by iso depth ──────────
+  // Depth key = gx + gy. Higher = further from camera = drawn first (further back).
+  // WAIT — in our iso view, camera looks from top-right toward bottom-left.
+  // Objects with LOWER gx+gy are closer to camera (drawn LAST / on top).
+  // Objects with HIGHER gx+gy are further from camera (drawn FIRST / behind).
+  // So we sort ascending by gx+gy and draw in that order — furthest first.
+  //
+  // The player marble is inserted as a drawable item at its exact gx+gy depth.
+  // No threshold tricks — pure painter's order.
+
+
+
+  // Simple painter's order — ascending gx+gy, ball drawn last (always visible on platform)
+  const sortedTiles=[...tileMap].sort((a,b)=>(a[0]+a[1])-(b[0]+b[1])||a[2]-b[2]);
+  for(const t of sortedTiles)
+    drawTile(t[0],t[1],t[2],t[3]||'normal',(t[0]+t[1])%2===0);
+
+  // Goal marker
+  if(goalPos){
+    const gs=toScr(goalPos.gx,goalPos.gy,goalPos.gz+.5);
+    const pulse=.5+.5*Math.sin(ts*.005);
+    const gr=ctx.createRadialGradient(gs.x,gs.y,2,gs.x,gs.y,34+pulse*12);
+    gr.addColorStop(0,'rgba(255,220,0,.9)');gr.addColorStop(1,'transparent');
+    ctx.beginPath();ctx.arc(gs.x,gs.y,46+pulse*12,0,Math.PI*2);ctx.fillStyle=gr;ctx.fill();
+    ctx.beginPath();ctx.moveTo(gs.x,gs.y+7);ctx.lineTo(gs.x,gs.y-38);
+    ctx.strokeStyle='#888';ctx.lineWidth=2.2;ctx.stroke();
+    ctx.beginPath();ctx.moveTo(gs.x,gs.y-38);ctx.lineTo(gs.x+20,gs.y-28);ctx.lineTo(gs.x,gs.y-18);
+    ctx.closePath();ctx.fillStyle=`hsl(${(ts/18)%360},92%,55%)`;ctx.fill();
+  }
+
+  // Update enemies
+  const liveEnemies=enemies.filter(e=>!e.dead);
+  for(const e of liveEnemies) e.update(dt);
+
+  // Draw enemies AFTER all tiles (same as player) — fade out when fallen off
+  for(const e of liveEnemies){
+    const ep=e.pos();
+    const egn=getTileBelow(ep.gx,ep.gy,ep.gz+2.0);
+    const eOnSurface=egn!==null&&Math.abs(ep.gz-egn)<1.5;
+    const eFell=ep.gz<-1.5;
+    if(!eFell||eOnSurface){
+      const fallDepth=egn!==null?egn-ep.gz:0;
+      ctx.globalAlpha=Math.max(0,1-fallDepth*0.3);
+      e.draw();
+      ctx.globalAlpha=1;
+    }
+  }
+
+  // Player — drawn last, always on top of tiles
+  // Visibility: hide ball only when it has physically fallen well below tile surface
+  // (i.e. it rolled off an edge and is genuinely below the geometry)
+  if(!player.dead){
+    const gn = getTileBelow(player.x, player.y, player.z + 2.0); // look 2 units above current z
+    const onSurface = gn !== null && Math.abs(player.z - gn) < 1.5;
+    const fellOff = player.z < -1.5; // fallen significantly below z=0 baseline
+
+    // Only show ball if it's near a tile surface (on platform) or hasn't fallen far yet
+    if(!fellOff || onSurface){
+      const ps=toScr(player.x,player.y,player.z);
+      if(gn!==null){
+        const gs2=toScr(player.x,player.y,gn);
+        const sa=Math.max(0,.42-(player.z-gn)*.04);
+        ctx.beginPath();ctx.ellipse(gs2.x,gs2.y,17,9,0,0,Math.PI*2);
+        ctx.fillStyle=`rgba(0,0,0,${sa})`;ctx.fill();
+      }
+      // Fade out as ball falls below tile level
+      const fallDepth = gn !== null ? gn - player.z : 0;
+      ctx.globalAlpha = Math.max(0, 1 - fallDepth * 0.3);
+      drawMarble(ps.x,ps.y,16,'#aaddff','#3388ee','#55aaff',true);
+      ctx.globalAlpha = 1;
+    }
+  }
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+// =============================================================================
+//  GAME FLOW
+// =============================================================================
+function loadLevel(n){
+  const def=buildLevel(n);
+  tileMap=def.tiles;
+  goalPos=def.goal;
+  iceLevel=!!def.icePhysics;
+  player.x=def.start.gx; player.y=def.start.gy; player.z=def.start.gz;
+  player.vx=0;player.vy=0;player.vz=0;player.dead=false;
+  // Place camera so the player starts centered horizontally and 35% from top.
+  // toScr(gx,gy,gz).x = isoProj.x + canvas.width/2 + camX  => want = canvas.width/2 => camX = -isoProj.x
+  // toScr(gx,gy,gz).y = isoProj.y + canvas.height/2 + camY  => want = canvas.height*0.35 => camY = canvas.height*0.35 - canvas.height/2 - isoProj.y
+  const sp=isoProj(def.start.gx,def.start.gy,def.start.gz);
+  camX=-sp.x;
+  camY=(canvas.height*0.35 - canvas.height/2) - sp.y;
+  enemies=(def.enemies||[]).map(e=>new Enemy(e));
+  levelTime=LEVEL_TIMES[n]||60;
+  updateHUD(); updateTimerBar();
+  clearInterval(timerInt);
+  timerInt=setInterval(()=>{
+    if(state!=='playing') return;
+    levelTime--;
+    document.getElementById('time-disp').textContent=levelTime;
+    updateTimerBar();
+    if(levelTime<=0) triggerDeath('time');
+  },1000);
+}
+function updateTimerBar(){const m=LEVEL_TIMES[currentLevel]||60;document.getElementById('timer-bar').style.width=Math.max(0,levelTime/m*100)+'%';}
+function updateHUD(){
+  document.getElementById('score-disp').textContent=score;
+  document.getElementById('level-disp').textContent=currentLevel+1;
+  document.getElementById('time-disp').textContent=levelTime;
+  for(let i=0;i<3;i++) document.getElementById('life'+i).className='life-dot'+(i>=lives?' dead':'');
+}
+function showLevelIntro(){
+  state='intro';
+  document.getElementById('lvl-num').textContent=currentLevel+1;
+  document.getElementById('lvl-name').textContent=LEVEL_NAMES[currentLevel]||('LEVEL '+(currentLevel+1));
+  show('level-screen');
+}
+function startLevel(){hide('level-screen');loadLevel(currentLevel);state='playing';}
+function levelComplete(){
+  state='done'; clearInterval(timerInt);
+  score+=levelTime*120+700; updateHUD();
+  currentLevel++;
+  if(currentLevel>=10){document.getElementById('win-score').textContent=score;show('win-screen');state='win';}
+  else setTimeout(()=>showLevelIntro(),400);
+}
+function triggerDeath(reason){
+  if(player.dead) return;
+  player.dead=true; state='dying'; clearInterval(timerInt); lives--; updateHUD();
+  setTimeout(()=>{
+    if(lives<=0){document.getElementById('final-score').textContent=score;show('gameover-screen');state='gameover';}
+    else if(reason==='time'){document.getElementById('timeout-sub').textContent='LIVES REMAINING: '+lives;show('timeout-screen');}
+    else{document.getElementById('death-sub').textContent='LIVES REMAINING: '+lives;show('death-screen');}
+  },700);
+}
+function fullReset(){currentLevel=0;lives=3;score=0;updateHUD();}
+function show(id){document.getElementById(id).style.display='flex';}
+function hide(id){document.getElementById(id).style.display='none';}
+
+// =============================================================================
+//  TRACKBALL + KEYBOARD
+// =============================================================================
+let tbDX=0,tbDY=0,tbActive=false,tbStartX=0,tbStartY=0;
+// Whole-screen trackpad: drag anywhere to move the ball
+// Mouse/touch: drag anywhere on screen. Delta from press point maps to world axes.
+// Isometric mapping: screen-right = world +x/-y diagonal, screen-down = world +x/+y diagonal
+// Simplified: map screen X drag → world X axis, screen Y drag → world Y axis
+// (player sees it as: drag right = roll right, drag down = roll toward camera)
+function screenToWorld(sdx, sdy) {
+  // Invert iso: screen dx = (wx-wy)*TW/2, screen dy = (wx+wy)*TH/2
+  // wx = sdx/TW + sdy/TH,  wy = -sdx/TW + sdy/TH
+  const wx = sdx/TW + sdy/TH;
+  const wy = -sdx/TW + sdy/TH;
+  return {wx, wy};
+}
+canvas.addEventListener('mousedown', e => {
+  tbActive=true; tbStartX=e.clientX; tbStartY=e.clientY; tbDX=0; tbDY=0; e.preventDefault();
+}, {passive:false});
+window.addEventListener('mousemove', e => {
+  if(!tbActive) return;
+  const sdx = e.clientX - tbStartX;
+  const sdy = e.clientY - tbStartY;
+  const {wx,wy} = screenToWorld(sdx, sdy);
+  const mag = Math.sqrt(wx*wx+wy*wy);
+  const cap = 2.5;
+  tbDX = Math.max(-1, Math.min(1, wx/cap));
+  tbDY = Math.max(-1, Math.min(1, wy/cap));
+});
+window.addEventListener('mouseup', () => { tbActive=false; tbDX=0; tbDY=0; });
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  tbActive=true; tbStartX=t.clientX; tbStartY=t.clientY; tbDX=0; tbDY=0;
+}, {passive:false});
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if(!tbActive) return;
+  const t = e.touches[0];
+  const sdx = t.clientX - tbStartX;
+  const sdy = t.clientY - tbStartY;
+  const {wx,wy} = screenToWorld(sdx, sdy);
+  const cap = 2.5;
+  tbDX = Math.max(-1, Math.min(1, wx/cap));
+  tbDY = Math.max(-1, Math.min(1, wy/cap));
+}, {passive:false});
+canvas.addEventListener('touchend', () => { tbActive=false; tbDX=0; tbDY=0; });
+const keys={};
+window.addEventListener('keydown',e=>{keys[e.key]=true;});
+window.addEventListener('keyup',e=>{keys[e.key]=false;});
+function applyKbd(){
+  if(tbActive) return;
+  // Map keys to world-space axes directly (isometric perspective):
+  // W/Up    = up on screen = world -x, -y
+  // S/Down  = down on screen = world +x, +y
+  // A/Left  = left on screen = world -x, +y  (roughly)
+  // D/Right = right on screen = world +x, -y (roughly)
+  let wx=0,wy=0;
+  if(keys['ArrowUp']   ||keys['w']){wx-=1;wy-=1;}
+  if(keys['ArrowDown'] ||keys['s']){wx+=1;wy+=1;}
+  if(keys['ArrowLeft'] ||keys['a']){wx-=1;wy+=1;}
+  if(keys['ArrowRight']||keys['d']){wx+=1;wy-=1;}
+  // Normalize diagonals
+  const m=Math.sqrt(wx*wx+wy*wy)||1;
+  tbDX=(wx/m)*0.75;tbDY=(wy/m)*0.75;
+}
+setInterval(applyKbd,16);
+setInterval(()=>{if(state==='playing') physStep(1/60);},1000/60);
+
+// Buttons
+document.getElementById('start-btn').onclick=()=>{hide('start-screen');fullReset();showLevelIntro();};
+document.getElementById('go-btn').onclick=startLevel;
+document.getElementById('retry-btn').onclick=()=>{hide('death-screen');startLevel();};
+document.getElementById('timeout-btn').onclick=()=>{hide('timeout-screen');startLevel();};
+document.getElementById('restart-btn').onclick=()=>{hide('gameover-screen');fullReset();showLevelIntro();};
+document.getElementById('winrestart-btn').onclick=()=>{hide('win-screen');fullReset();showLevelIntro();};
+</script>
+</body>
+</html>
