@@ -638,43 +638,136 @@ class Enemy{
       this.vx=0; this.vy=0; this.vz=0;
       this.physX=this.gx; this.physY=this.gy; this.physZ=this.gz;
       this.physEnabled=true;
+      this.sleeping=true;       // small balls start asleep, wake when player is close
+      this.wakeRadius=4.0;      // distance at which they wake up
     }
     // Chase enemies: rollerball, skullhead, crab, ghost actively hunt player
-    this.chases = ['rollerball','iceball','skullhead','ghost','crab','rotatosquare'].includes(this.type);
-    // Path patrol bounds (used as roam limits even when chasing)
+    this.chases = ['rollerball','iceball','skullhead','ghost','crab'].includes(this.type);
+    // Path patrol bounds
     this.patrolA = (def.path&&def.path[0]) ? def.path[0] : {gx:def.gx,gy:def.gy,gz:def.gz};
     this.patrolB = (def.path&&def.path[1]) ? def.path[1] : {gx:def.gx,gy:def.gy,gz:def.gz};
+
+    // Rotatosquare: dice-roll grid movement
+    if(this.type==='rotatosquare'){
+      // Snap to integer grid
+      this.rx = Math.round(def.gx);
+      this.ry = Math.round(def.gy);
+      this.rz = def.gz;
+      this.gx = this.rx; this.gy = this.ry; this.gz = this.rz;
+      this.faceAngle = 0;                 // current face angle (0, 90, 180, 270)
+      this.rollAngle = 0;                 // visual roll in progress
+      this.rollTarget = 0;               // target angle
+      this.rollProgress = 1;             // 1 = idle, 0→1 = rolling
+      this.rollDuration = 0.35;          // seconds per tile move
+      this.rollTimer = 0;
+      this.nextMoveTimer = 0.4 + Math.random()*0.4;
+      this.fromX = this.rx; this.fromY = this.ry;
+      this.toX   = this.rx; this.toY   = this.ry;
+      // 4 possible step directions on iso grid
+      this.stepDirs = [{dx:1,dy:0},{dx:-1,dy:0},{dx:0,dy:1},{dx:0,dy:-1}];
+    }
   }
   update(dt){
     this.anim+=dt;
-    if(this.physEnabled) return; // small pushable enemies handled by physics engine
+
+    // ── Small physEnabled balls: sleep until player is close, then nudge ──────
+    if(this.physEnabled){
+      if(this.sleeping && player && !player.dead){
+        const dx=player.x-this.physX, dy=player.y-this.physY;
+        const dist=Math.sqrt(dx*dx+dy*dy);
+        if(dist < this.wakeRadius){
+          this.sleeping=false; // wake up!
+        }
+      }
+      if(!this.sleeping && player && !player.dead){
+        // Gentle nudge toward player — small mass means gentle push only
+        const dx=player.x-this.physX, dy=player.y-this.physY;
+        const d=Math.sqrt(dx*dx+dy*dy)||1;
+        // Aggressive charge toward player
+        const nudge=8.0;
+        this.vx += (dx/d)*nudge*dt;
+        this.vy += (dy/d)*nudge*dt;
+        // Cap speed
+        const spd=Math.sqrt(this.vx*this.vx+this.vy*this.vy);
+        const maxSpd=4.0;
+        if(spd>maxSpd){this.vx*=maxSpd/spd; this.vy*=maxSpd/spd;}
+      }
+      return; // rest of physics handled in physStep
+    }
+
+    // ── Rotatosquare: dice-roll — snap moves tile-by-tile in 4 directions ─────
+    if(this.type==='rotatosquare'){
+      this.nextMoveTimer-=dt;
+      if(this.rollProgress<1){
+        // Mid-roll animation
+        this.rollTimer+=dt;
+        this.rollProgress=Math.min(1,this.rollTimer/this.rollDuration);
+        const ease=this.rollProgress<0.5
+          ? 2*this.rollProgress*this.rollProgress
+          : -1+(4-2*this.rollProgress)*this.rollProgress; // smooth ease
+        this.gx=this.fromX+(this.toX-this.fromX)*ease;
+        this.gy=this.fromY+(this.toY-this.fromY)*ease;
+        this.rollAngle=this.faceAngle+(this.rollTarget-this.faceAngle)*ease;
+        if(this.rollProgress>=1){
+          this.rx=this.toX; this.ry=this.toY;
+          this.gx=this.rx; this.gy=this.ry;
+          this.faceAngle=this.rollTarget % (Math.PI*2);
+          this.rollProgress=1;
+        }
+      } else if(this.nextMoveTimer<=0){
+        // Pick next move — try to move toward player if close, else random
+        let chosen=null;
+        if(player && !player.dead){
+          const pdx=player.x-this.rx, pdy=player.y-this.ry;
+          const pdist=Math.sqrt(pdx*pdx+pdy*pdy);
+          if(pdist<8){
+            // Move toward player: pick the direction that closes distance most
+            let best=Infinity;
+            for(const d of this.stepDirs){
+              const nx=this.rx+d.dx, ny=this.ry+d.dy;
+              const score=(player.x-nx)**2+(player.y-ny)**2;
+              if(score<best){best=score;chosen=d;}
+            }
+          }
+        }
+        if(!chosen){
+          // Random direction
+          chosen=this.stepDirs[Math.floor(Math.random()*4)];
+        }
+        // Check patrol bounds before moving
+        const nx=this.rx+chosen.dx, ny=this.ry+chosen.dy;
+        const minX=Math.min(this.patrolA.gx,this.patrolB.gx)-0.5;
+        const maxX=Math.max(this.patrolA.gx,this.patrolB.gx)+0.5;
+        const minY=Math.min(this.patrolA.gy,this.patrolB.gy)-0.5;
+        const maxY=Math.max(this.patrolA.gy,this.patrolB.gy)+0.5;
+        if(nx>=minX&&nx<=maxX&&ny>=minY&&ny<=maxY){
+          this.fromX=this.rx; this.fromY=this.ry;
+          this.toX=nx; this.toY=ny;
+          // Rotate 90° on the axis perpendicular to movement direction
+          const rotDir=(chosen.dx!==0)?Math.PI/2:-Math.PI/2;
+          this.rollTarget=this.faceAngle+rotDir;
+          this.rollProgress=0; this.rollTimer=0;
+        }
+        this.nextMoveTimer=0.3+Math.random()*0.3;
+      }
+      return;
+    }
 
     const sp=this._spd();
 
     if(this.chases && player && !player.dead){
-      // Actively chase the player — no patrol clamping, they hunt freely
-      const dx=player.x-this.gx, dy=player.y-this.gy;
-      const d=Math.sqrt(dx*dx+dy*dy)||1;
-
-      // Accelerate toward player — build up speed like a charging ball
       if(!this.cvx) this.cvx=0;
       if(!this.cvy) this.cvy=0;
+      const dx=player.x-this.gx, dy=player.y-this.gy;
+      const d=Math.sqrt(dx*dx+dy*dy)||1;
       this.cvx += (dx/d)*sp*dt*4;
       this.cvy += (dy/d)*sp*dt*4;
-      // Cap chase speed
       const cs=Math.sqrt(this.cvx*this.cvx+this.cvy*this.cvy);
       if(cs>sp){this.cvx*=sp/cs; this.cvy*=sp/cs;}
-      // Friction
       this.cvx*=0.92; this.cvy*=0.92;
-
-      this.gx+=this.cvx*dt;
-      this.gy+=this.cvy*dt;
-
-      // Stay on the same gz as patrol zone
+      this.gx+=this.cvx*dt; this.gy+=this.cvy*dt;
       const midGz=(this.patrolA.gz+this.patrolB.gz)/2;
       this.gz+=(midGz-this.gz)*0.08;
-
-      // Soft boundary — slow down near patrol edges but don't hard-clamp
       const minX=Math.min(this.patrolA.gx,this.patrolB.gx)-1;
       const maxX=Math.max(this.patrolA.gx,this.patrolB.gx)+1;
       const minY=Math.min(this.patrolA.gy,this.patrolB.gy)-1;
@@ -684,7 +777,6 @@ class Enemy{
       if(this.gy<minY){this.gy=minY;this.cvy=Math.abs(this.cvy);}
       if(this.gy>maxY){this.gy=maxY;this.cvy=-Math.abs(this.cvy);}
     } else {
-      // Patrol back and forth along path
       if(!this.path||this.path.length<2) return;
       this.t+=dt*sp*this.dir;
       if(this.t>=1){this.t=1;this.dir=-1;}
@@ -709,7 +801,18 @@ class Enemy{
     const {gx,gy,gz}=this.pos();
     const s=toScr(gx,gy,gz);
     ctx.globalAlpha=this.type==='ghost'?(.44+Math.sin(this.anim*2)*.28):1;
-    if(this.small){drawMarble(s.x,s.y,9,'#ff9988','#cc2200','#ff4422',true);}
+    if(this.small){
+      drawMarble(s.x,s.y,9,'#ff9988','#cc2200','#ff4422',!this.sleeping);
+      if(this.sleeping){
+        // Show zzz above sleeping ball
+        ctx.save();
+        ctx.font='bold 8px monospace';
+        ctx.fillStyle='rgba(200,200,255,0.8)';
+        ctx.fillText('z',s.x+6,s.y-8);
+        ctx.fillText('z',s.x+10,s.y-13);
+        ctx.restore();
+      }
+    }
     else{
       switch(this.type){
         case'rollerball': drawMarble(s.x,s.y,12,'#ff7766','#cc2200','#ff4422',true); break;
@@ -815,34 +918,32 @@ class Enemy{
     ctx.beginPath();ctx.arc(6.2,-6,1.6,0,Math.PI*2);ctx.fill();ctx.restore();
   }
   _rotatosquare(sx,sy){
-    // A menacing rotating square that slides along paths
-    const angle = this.anim * 3.0; // spins fast
+    // Dice-rolling square: snaps between 0/90/180/270 degree orientations
+    const angle = this.rollAngle !== undefined ? this.rollAngle : 0;
+    const s = 12;
     ctx.save();
     ctx.translate(sx, sy);
     ctx.rotate(angle);
-    const s = 13;
-    // Outer glow
-    ctx.shadowColor = '#ff6600';
-    ctx.shadowBlur = 10;
-    // Main square body
-    ctx.beginPath();
-    ctx.rect(-s, -s, s*2, s*2);
-    const g = ctx.createLinearGradient(-s,-s,s,s);
-    g.addColorStop(0,'#ff4400'); g.addColorStop(0.5,'#ff9900'); g.addColorStop(1,'#ff4400');
-    ctx.fillStyle = g;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    // Inner rotating cross
-    ctx.strokeStyle = 'rgba(255,220,0,0.7)';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath(); ctx.moveTo(-s,0); ctx.lineTo(s,0); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0,-s); ctx.lineTo(0,s); ctx.stroke();
-    // Corner spikes
-    ctx.fillStyle = '#ffcc00';
-    for(let i=0;i<4;i++){
-      const cx = (i<2?-1:1)*s, cy = (i%2===0?-1:1)*s;
-      ctx.beginPath(); ctx.arc(cx,cy,3.5,0,Math.PI*2); ctx.fill();
+    // Shadow glow
+    ctx.shadowColor='#ff6600'; ctx.shadowBlur=8;
+    // Main square face — coloured like a die face
+    ctx.beginPath(); ctx.rect(-s,-s,s*2,s*2);
+    const g=ctx.createLinearGradient(-s,-s,s,s);
+    g.addColorStop(0,'#cc3300'); g.addColorStop(0.5,'#ff8800'); g.addColorStop(1,'#cc3300');
+    ctx.fillStyle=g; ctx.fill();
+    ctx.shadowBlur=0;
+    // Bold border
+    ctx.strokeStyle='#ffcc00'; ctx.lineWidth=2; ctx.stroke();
+    // Die dots (3 dots = face value 3, showing direction)
+    ctx.fillStyle='#fff';
+    const dots=[[-5,-5],[0,0],[5,5]];
+    for(const [dx,dy] of dots){
+      ctx.beginPath(); ctx.arc(dx,dy,2.2,0,Math.PI*2); ctx.fill();
     }
+    // Arrow showing current direction of travel
+    ctx.strokeStyle='rgba(255,220,0,0.85)'; ctx.lineWidth=2.5; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(0,4); ctx.lineTo(0,-8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-3,-5); ctx.lineTo(0,-8); ctx.lineTo(3,-5); ctx.stroke();
     ctx.restore();
   }
   _skull(sx,sy){
@@ -1155,8 +1256,14 @@ canvas.addEventListener('mousedown', e => {
 }, {passive:false});
 window.addEventListener('mousemove', e => {
   if(!tbActive) return;
-  tbCurX=e.clientX; tbCurY=e.clientY;
-  applyDrag(tbCurX-tbPrevX, tbCurY-tbPrevY);
+  // Mouse: absolute offset from press point, with larger cap (40px = full speed)
+  const sdx=e.clientX-tbPrevX, sdy=e.clientY-tbPrevY;
+  const MOUSE_CAP=40;
+  const rawX=sdx/MOUSE_CAP, rawY=sdy/MOUSE_CAP;
+  let wx=rawX+rawY, wy=rawY-rawX;
+  const mag=Math.sqrt(wx*wx+wy*wy);
+  if(mag>1){wx/=mag;wy/=mag;}
+  tbDX=wx; tbDY=wy;
 });
 window.addEventListener('mouseup', () => { tbActive=false; tbDX=0; tbDY=0; });
 
