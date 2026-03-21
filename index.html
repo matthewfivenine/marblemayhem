@@ -1031,6 +1031,20 @@ let enemies=[];
 let state='start', currentLevel=0, lives=3, score=0, levelTime=60;
 let timerInt=null, iceLevel=false;
 
+// Returns the z of a tile that is ABOVE player level at px,py — meaning a wall/step they can't walk into
+function getTileAbove(px,py,pz){
+  for(const t of tileMap){
+    const dx=Math.abs(t[0]-px), dy=Math.abs(t[1]-py);
+    // Check if we're overlapping this tile's footprint
+    if(dx<0.65&&dy<0.65){
+      // This tile's surface is above player's current z by more than step-up threshold
+      // If surface > player.z + 0.5, it's a wall (player can't step up that high)
+      if(t[2]>pz+0.55) return t[2];
+    }
+  }
+  return null;
+}
+
 function getTileBelow(px,py,pz){
   let best=null;
   for(const t of tileMap){
@@ -1055,7 +1069,21 @@ function physStep(dt){
   if(spd>ms){player.vx*=ms/spd;player.vy*=ms/spd;}
   player.vx*=friction; player.vy*=friction;
   player.vz-=22*dt;
-  player.x+=player.vx*dt; player.y+=player.vy*dt; player.z+=player.vz*dt;
+
+  // Move X axis, then check wall collision
+  player.x+=player.vx*dt;
+  {
+    const wallZ=getTileAbove(player.x,player.y,player.z);
+    if(wallZ!==null){player.x-=player.vx*dt; player.vx*=-0.2;}
+  }
+  // Move Y axis, then check wall collision
+  player.y+=player.vy*dt;
+  {
+    const wallZ=getTileAbove(player.x,player.y,player.z);
+    if(wallZ!==null){player.y-=player.vy*dt; player.vy*=-0.2;}
+  }
+
+  player.z+=player.vz*dt;
   const gnd=getTileBelow(player.x,player.y,player.z);
   if(gnd!==null&&player.z<=gnd){player.z=gnd;player.vz=0;}
   if(player.z<-22){triggerDeath('fall');return;}
@@ -1153,7 +1181,7 @@ function physStep(dt){
     e.physX+=e.vx*dt; e.physY+=e.vy*dt; e.physZ+=e.vz*dt;
     const eg=getTileBelow(e.physX,e.physY,e.physZ);
     if(eg!==null&&e.physZ<=eg){e.physZ=eg;e.vz=0;}
-    if(e.physZ<-22) e.dead=true;
+    if(e.physZ<-40) e.dead=true; // die when truly deep
     e.gx=e.physX; e.gy=e.physY; e.gz=e.physZ;
   }
 
@@ -1219,15 +1247,18 @@ function render(ts){
   const liveEnemies=enemies.filter(e=>!e.dead);
   for(const e of liveEnemies) e.update(dt);
 
-  // Draw enemies AFTER all tiles (same as player) — fade out when fallen off
+  // Draw enemies AFTER all tiles — fade when genuinely deep below any tile surface
   for(const e of liveEnemies){
     const ep=e.pos();
-    const egn=getTileBelow(ep.gx,ep.gy,ep.gz+2.0);
-    const eOnSurface=egn!==null&&Math.abs(ep.gz-egn)<1.5;
-    const eFell=ep.gz<-1.5;
-    if(!eFell||eOnSurface){
-      const fallDepth=egn!==null?egn-ep.gz:0;
-      ctx.globalAlpha=Math.max(0,1-fallDepth*0.3);
+    // Check for a tile anywhere reasonably close above the enemy
+    const egn=getTileBelow(ep.gx,ep.gy,ep.gz+4.0); // look 4 units above
+    const nearSurface=egn!==null&&(egn-ep.gz)<4.0;  // tile within 4 units above
+    // Also check the enemy's own physics z vs its start z
+    const deepFall=ep.gz<-30; // only truly vanish when very deep
+    if(!deepFall){
+      // Fade only when clearly falling well below tile surface
+      const fallDepth=egn!==null?Math.max(0,egn-ep.gz):0;
+      ctx.globalAlpha=Math.max(0.05,1-fallDepth*0.18);
       e.draw();
       ctx.globalAlpha=1;
     }
