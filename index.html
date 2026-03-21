@@ -1051,7 +1051,7 @@ function getTileBelow(px,py,pz){
     const dx=Math.abs(t[0]-px), dy=Math.abs(t[1]-py);
     if(dx<0.72&&dy<0.72){
       const s=t[2];
-      if(s<=pz-0.05&&(best===null||s>best)) best=s; // strictly below, never a wall tile
+      if(s<=pz+0.1&&(best===null||s>best)) best=s;
     }
   }
   return best;
@@ -1270,14 +1270,15 @@ function render(ts){
   if(!player.dead){
     // Only look BELOW the ball for the ground shadow — never above it.
     // Using player.z (not player.z+2) prevents wall tiles from being mistaken for ground.
-    const gn = getTileBelow(player.x, player.y, player.z);
+    // For shadow: find ground strictly below ball (wall tiles excluded by -0.2 offset)
+    const gn = getTileBelow(player.x, player.y, player.z - 0.2);
     const onSurface = gn !== null && Math.abs(player.z - gn) < 1.5;
     const fellOff = player.z < -1.5;
 
     if(!fellOff || onSurface){
       const ps=toScr(player.x,player.y,player.z);
       // Shadow: only draw when tile is at or below the ball's feet (gn <= player.z)
-      if(gn!==null && gn <= player.z){  // only draw shadow when tile is at or below ball
+      if(gn!==null && gn <= player.z - 0.1){  // tile must be clearly below ball
         const gs2=toScr(player.x,player.y,gn);
         const sa=Math.max(0,.42-(player.z-gn)*.04);
         ctx.beginPath();ctx.ellipse(gs2.x,gs2.y,17,9,0,0,Math.PI*2);
