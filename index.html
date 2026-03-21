@@ -1051,7 +1051,7 @@ function getTileBelow(px,py,pz){
     const dx=Math.abs(t[0]-px), dy=Math.abs(t[1]-py);
     if(dx<0.72&&dy<0.72){
       const s=t[2];
-      if(s<=pz+0.1&&(best===null||s>best)) best=s;
+      if(s<=pz-0.05&&(best===null||s>best)) best=s; // strictly below, never a wall tile
     }
   }
   return best;
@@ -1268,20 +1268,21 @@ function render(ts){
   // Visibility: hide ball only when it has physically fallen well below tile surface
   // (i.e. it rolled off an edge and is genuinely below the geometry)
   if(!player.dead){
-    const gn = getTileBelow(player.x, player.y, player.z + 2.0); // look 2 units above current z
+    // Only look BELOW the ball for the ground shadow — never above it.
+    // Using player.z (not player.z+2) prevents wall tiles from being mistaken for ground.
+    const gn = getTileBelow(player.x, player.y, player.z);
     const onSurface = gn !== null && Math.abs(player.z - gn) < 1.5;
-    const fellOff = player.z < -1.5; // fallen significantly below z=0 baseline
+    const fellOff = player.z < -1.5;
 
-    // Only show ball if it's near a tile surface (on platform) or hasn't fallen far yet
     if(!fellOff || onSurface){
       const ps=toScr(player.x,player.y,player.z);
-      if(gn!==null){
+      // Shadow: only draw when tile is at or below the ball's feet (gn <= player.z)
+      if(gn!==null && gn <= player.z){  // only draw shadow when tile is at or below ball
         const gs2=toScr(player.x,player.y,gn);
         const sa=Math.max(0,.42-(player.z-gn)*.04);
         ctx.beginPath();ctx.ellipse(gs2.x,gs2.y,17,9,0,0,Math.PI*2);
         ctx.fillStyle=`rgba(0,0,0,${sa})`;ctx.fill();
       }
-      // Fade out as ball falls below tile level
       const fallDepth = gn !== null ? gn - player.z : 0;
       ctx.globalAlpha = Math.max(0, 1 - fallDepth * 0.3);
       drawMarble(ps.x,ps.y,16,'#aaddff','#3388ee','#55aaff',true);
