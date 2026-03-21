@@ -111,6 +111,15 @@ const TC = {
   white:   {t:'#eeeeee',l:'#2a2a2a',r:'#404040'},
   start:   {t:'#28cc3e',l:'#041a08',r:'#0a2a10'},
   goal:    {t:'#ffcc00',l:'#241800',r:'#382800'},
+  // Special mechanic tiles
+  conveyor_n: {t:'#ff8800',l:'#2a1200',r:'#3a1c00'}, // orange — pushes -y
+  conveyor_s: {t:'#ff8800',l:'#2a1200',r:'#3a1c00'}, // orange — pushes +y
+  conveyor_e: {t:'#ff8800',l:'#2a1200',r:'#3a1c00'}, // orange — pushes +x
+  conveyor_w: {t:'#ff8800',l:'#2a1200',r:'#3a1c00'}, // orange — pushes -x
+  bounce:     {t:'#ff44ff',l:'#280028',r:'#3c003c'}, // pink — launches up
+  wave:       {t:'#00ccff',l:'#003344',r:'#004455'}, // cyan — oscillates
+  chute_in:   {t:'#ffcc44',l:'#2a2000',r:'#3c3000'}, // gold — chute entrance
+  chute_out:  {t:'#44ffcc',l:'#003328',r:'#004438'}, // teal — chute exit
 };
 
 function drawTile(gx,gy,gz,type,ca){
@@ -210,7 +219,7 @@ function B(x,y,z,w,h,t){const a=[];for(let dx=0;dx<w;dx++)for(let dy=0;dy<h;dy++
 function RampY(x,y,z,len,w,t){const a=[];for(let i=0;i<len;i++)for(let j=0;j<w;j++)a.push([x+j,y+i,z-i,t]);return a;}
 function RampX(x,y,z,len,h,t){const a=[];for(let i=0;i<len;i++)for(let j=0;j<h;j++)a.push([x+i,y+j,z-i,t]);return a;}
 
-// ── Level 1 ─ BEGINNER'S LUCK — grey, simple intro ────────────────────────
+// ── Level 1 ─ BEGINNER'S LUCK — grey, intro to basics + spikeball ──────────
 function L1(){
   const T='normal';
   return {
@@ -232,48 +241,54 @@ function L1(){
       {type:'rollerball',gx:0,gy:10,gz:-4,small:true,path:[{gx:-1,gy:10,gz:-4},{gx:3,gy:10,gz:-4}]},
       {type:'rollerball',gx:2,gy:11,gz:-4,small:true,path:[{gx:-1,gy:11,gz:-4},{gx:3,gy:11,gz:-4}]},
       {type:'inchworm',gx:1,gy:15,gz:-4,path:[{gx:1,gy:13,gz:-4},{gx:1,gy:18,gz:-4}]},
-      {type:'rotatosquare',gx:1,gy:21,gz:-4,path:[{gx:0,gy:20,gz:-4},{gx:2,gy:22,gz:-4}]},
+      {type:'bouncer',gx:1,gy:21,gz:-4,path:[{gx:0,gy:20,gz:-4},{gx:2,gy:20,gz:-4}]},
     ]
   };
 }
 
-// ── Level 2 ─ THE DESCENT — blue theme, zigzag maze, longer ───────────────
+// ── Level 2 ─ THE DESCENT — blue, conveyor belts push you off bridges ─────
 function L2(){
   const T='blue';
   return {
     tiles:[
       ...B(-2,0,0,5,4,T),
-      ...C(0,4,0,6,T),...C(1,4,0,6,T),
-      ...R(2,9,0,6,T),...R(2,10,0,6,T),
-      ...C(7,10,0,7,T),...C(8,10,0,7,T),
-      ...R(1,16,0,7,T),...R(1,17,0,7,T),
-      ...C(1,17,0,8,T),...C(0,17,0,8,T),
-      ...B(-1,25,0,4,3,T),
-      ...RampY(-1,28,0,6,3,T),
-      ...C(0,34,-5,9,T),
-      ...B(-2,43,-5,5,3,T),
-      ...R(-2,46,-5,8,T),...R(-2,47,-5,8,T),
-      ...C(5,47,-5,8,T),
-      ...B(4,55,-5,4,3,T),
-      ...RampY(4,58,-5,5,3,T),
-      ...C(5,63,-9,6,T),
-      ...B(3,69,-9,5,4,'goal'),
+      // Conveyor section — belt pushes east (right), danger on narrow path
+      [0,4,0,'conveyor_e'],[1,4,0,'conveyor_e'],
+      [0,5,0,'conveyor_e'],[1,5,0,'conveyor_e'],
+      [0,6,0,'conveyor_e'],[1,6,0,'conveyor_e'],
+      ...R(-1,7,0,4,T), ...R(-1,8,0,4,T),
+      ...C(0,9,0,7,T),...C(1,9,0,7,T),
+      ...R(2,15,0,6,T),...R(2,16,0,6,T),
+      ...C(7,16,0,7,T),...C(8,16,0,7,T),
+      // Another conveyor — pushes south
+      [7,18,0,'conveyor_s'],[8,18,0,'conveyor_s'],
+      [7,19,0,'conveyor_s'],[8,19,0,'conveyor_s'],
+      ...R(1,22,0,7,T),...R(1,23,0,7,T),
+      ...C(1,23,0,8,T),...C(0,23,0,8,T),
+      ...B(-1,31,0,4,3,T),
+      ...RampY(-1,34,0,6,3,T),
+      ...C(0,40,-5,9,T),
+      ...B(-2,49,-5,5,3,T),
+      ...R(-2,52,-5,8,T),...R(-2,53,-5,8,T),
+      ...C(5,53,-5,8,T),
+      ...B(4,61,-5,4,3,T),
+      ...RampY(4,64,-5,5,3,T),
+      ...C(5,69,-9,6,T),
+      ...B(3,75,-9,5,4,'goal'),
     ],
-    start:{gx:0,gy:1,gz:0}, goal:{gx:4,gy:70,gz:-9},
+    start:{gx:0,gy:1,gz:0}, goal:{gx:4,gy:76,gz:-9},
     enemies:[
-      {type:'rollerball',gx:0,gy:5,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:1,gy:9,gz:0}]},
-      {type:'rollerball',gx:1,gy:7,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:1,gy:9,gz:0}]},
-      {type:'crab',gx:5,gy:11,gz:0,path:[{gx:2,gy:10,gz:0},{gx:7,gy:11,gz:0}]},
-      {type:'rotatosquare',gx:4,gy:14,gz:0,path:[{gx:1,gy:13,gz:0},{gx:7,gy:16,gz:0}]},
-      {type:'inchworm',gx:3,gy:19,gz:0,path:[{gx:1,gy:17,gz:0},{gx:7,gy:17,gz:0}]},
-      {type:'skullhead',gx:0,gy:36,gz:-5,path:[{gx:0,gy:34,gz:-5},{gx:0,gy:42,gz:-5}]},
-      {type:'rotatosquare',gx:1,gy:49,gz:-5,path:[{gx:-2,gy:47,gz:-5},{gx:4,gy:47,gz:-5}]},
-      {type:'ghost',gx:5,gy:52,gz:-5,path:[{gx:4,gy:47,gz:-5},{gx:7,gy:54,gz:-5}]},
+      {type:'rollerball',gx:0,gy:10,gz:0,small:true,path:[{gx:0,gy:9,gz:0},{gx:1,gy:15,gz:0}]},
+      {type:'crab',gx:5,gy:17,gz:0,path:[{gx:2,gy:16,gz:0},{gx:7,gy:17,gz:0}]},
+      {type:'rotatosquare',gx:4,gy:20,gz:0,path:[{gx:1,gy:18,gz:0},{gx:7,gy:22,gz:0}]},
+      {type:'skullhead',gx:0,gy:36,gz:-5,path:[{gx:0,gy:34,gz:-5},{gx:0,gy:48,gz:-5}]},
+      {type:'rotatosquare',gx:1,gy:55,gz:-5,path:[{gx:-2,gy:53,gz:-5},{gx:4,gy:53,gz:-5}]},
+      {type:'ghost',gx:5,gy:58,gz:-5,path:[{gx:4,gy:53,gz:-5},{gx:7,gy:60,gz:-5}]},
     ]
   };
 }
 
-// ── Level 3 ─ FROZEN FALLS — ice theme, slippery ramps, long bridges ──────
+// ── Level 3 ─ FROZEN FALLS — ice + wave tiles + chute shortcut ────────────
 function L3(){
   const T='ice';
   return {
@@ -281,19 +296,26 @@ function L3(){
       ...B(-3,0,0,7,4,T),
       ...C(0,4,0,7,T),
       ...B(-2,11,0,5,3,T),
+      // Wave tiles — oscillate up/down on this platform
+      [-1,11,0,'wave'],[0,11,0,'wave'],[1,11,0,'wave'],
       ...RampY(-2,14,0,8,5,T),
       ...R(-8,22,-7,9,T),...R(-8,23,-7,9,T),
       ...B(-10,24,-7,4,4,T),
+      // Chute entrance here
+      [-9,27,-7,'chute_in'],
       ...C(-9,28,-7,8,T),...C(-8,28,-7,8,T),
       ...B(-10,36,-7,5,3,T),
       ...RampY(-10,39,-7,6,4,T),
       ...C(-8,45,-12,8,T),
+      // Chute exit far below
+      [-8,50,-12,'chute_out'],
       ...B(-10,53,-12,5,3,T),
       ...R(-10,56,-12,9,T),
       ...C(-2,56,-12,7,T),
       ...B(-3,63,-12,5,4,'goal'),
     ],
     start:{gx:0,gy:1,gz:0}, goal:{gx:-2,gy:64,gz:-12}, icePhysics:true,
+    chutes:[{inX:-9,inY:27,outX:-8,outY:50,outZ:-12}],
     enemies:[
       {type:'iceball',gx:0,gy:6,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:0,gy:10,gz:0}]},
       {type:'iceball',gx:-2,gy:13,gz:0,small:true,path:[{gx:-2,gy:12,gz:0},{gx:2,gy:13,gz:0}]},
@@ -307,51 +329,46 @@ function L3(){
   };
 }
 
-// ── Level 4 ─ RED CANYON — red/yellow, wide then very narrow, lots of turns
+// ── Level 4 ─ RED CANYON — red+yellow, bounce pads + conveyor combos ──────
 function L4(){
   const tiles=[];
-  const rd=(x,y,z)=>tiles.push([x,y,z,'red']);
-  const yw=(x,y,z)=>tiles.push([x,y,z,'yellow']);
-  // Start pad
   for(let x=-2;x<=3;x++)for(let y=0;y<4;y++)tiles.push([x,y,0,'red']);
-  // Zigzag corridors — red+yellow alternating
-  for(let y=4;y<11;y++){rd(0,y,0);yw(1,y,0);}
-  for(let x=1;x<=8;x++){yw(x,11,0);rd(x,12,0);}
-  for(let y=12;y<20;y++){rd(8,y,0);yw(9,y,0);}
-  for(let x=9;x>=2;x--){yw(x,20,0);rd(x,21,0);}
-  for(let y=21;y<28;y++){rd(2,y,0);yw(3,y,0);}
-  // Wide platform
-  for(let x=1;x<=6;x++)for(let y=28;y<31;y++)tiles.push([x,y,0,'red']);
-  // Ramp down
-  for(let s=0;s<6;s++)for(let j=0;j<3;j++)tiles.push([2+j,31+s,-s,'red']);
-  // 2-wide bridge
-  for(let y=37;y<46;y++){rd(3,y,-5);yw(4,y,-5);}
-  // Platform
-  for(let x=1;x<=6;x++)for(let y=46;y<49;y++)tiles.push([x,y,-5,'yellow']);
-  // 1-wide bridge
-  for(let y=49;y<58;y++)tiles.push([3,y,-5,'red']);
-  // Ramp
-  for(let s=0;s<5;s++)for(let j=0;j<3;j++)tiles.push([2+j,58+s,-5-s,'red']);
-  // Goal
-  for(let x=1;x<=6;x++)for(let y=63;y<67;y++)tiles.push([x,y,-9,'goal']);
+  for(let y=4;y<11;y++){tiles.push([0,y,0,'red']);tiles.push([1,y,0,'yellow']);}
+  for(let x=1;x<=8;x++){tiles.push([x,11,0,'yellow']);tiles.push([x,12,0,'red']);}
+  // Bounce pads on this platform
+  tiles.push([3,11,0,'bounce'],[5,11,0,'bounce'],[7,11,0,'bounce']);
+  for(let y=12;y<20;y++){tiles.push([8,y,0,'red']);tiles.push([9,y,0,'yellow']);}
+  for(let x=9;x>=2;x--){tiles.push([x,20,0,'yellow']);tiles.push([x,21,0,'red']);}
+  for(let y=21;y<28;y++){tiles.push([2,y,0,'red']);tiles.push([3,y,0,'yellow']);}
+  for(let x=2;x<=10;x++){tiles.push([x,28,0,'red']);tiles.push([x,29,0,'yellow']);}
+  // Conveyor belt straight run
+  for(let x=2;x<=9;x++) tiles.push([x,30,0,'conveyor_e']);
+  for(let y=30;y<36;y++){tiles.push([9,y,0,'red']);tiles.push([10,y,0,'yellow']);}
+  for(let x=8;x<=13;x++){tiles.push([x,36,0,'yellow']);tiles.push([x,37,0,'red']);}
+  for(let s=0;s<6;s++)for(let j=0;j<3;j++)tiles.push([9+j,38+s,-s,'red']);
+  for(let y=44;y<53;y++){tiles.push([10,y,-5,'red']);tiles.push([11,y,-5,'yellow']);}
+  // Wave bridge section
+  for(let y=44;y<53;y++) tiles.push([12,y,-5,'wave']);
+  for(let x=8;x<=14;x++)for(let y=53;y<56;y++)tiles.push([x,y,-5,'yellow']);
+  for(let y=56;y<65;y++)tiles.push([10,y,-5,'red']);
+  for(let s=0;s<5;s++)for(let j=0;j<3;j++)tiles.push([9+j,65+s,-5-s,'red']);
+  for(let x=8;x<=14;x++)for(let y=70;y<74;y++)tiles.push([x,y,-9,'goal']);
   return {
-    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:3,gy:64,gz:-9},
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:10,gy:71,gz:-9},
     enemies:[
       {type:'rollerball',gx:0,gy:5,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:1,gy:10,gz:0}]},
-      {type:'rollerball',gx:1,gy:7,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:1,gy:10,gz:0}]},
       {type:'rotatosquare',gx:5,gy:12,gz:0,path:[{gx:1,gy:11,gz:0},{gx:8,gy:12,gz:0}]},
       {type:'crab',gx:8,gy:15,gz:0,path:[{gx:8,gy:12,gz:0},{gx:9,gy:19,gz:0}]},
-      {type:'zigzagger',gx:2,gy:23,gz:0,path:[{gx:2,gy:21,gz:0},{gx:3,gy:27,gz:0}]},
-      {type:'skullhead',gx:3,gy:29,gz:0,path:[{gx:1,gy:28,gz:0},{gx:6,gy:29,gz:0}]},
-      {type:'rotatosquare',gx:3,gy:40,gz:-5,path:[{gx:3,gy:37,gz:-5},{gx:4,gy:45,gz:-5}]},
-      {type:'ghost',gx:3,gy:52,gz:-5,path:[{gx:3,gy:49,gz:-5},{gx:3,gy:57,gz:-5}]},
-      {type:'rollerball',gx:3,gy:54,gz:-5,small:true,path:[{gx:3,gy:49,gz:-5},{gx:3,gy:57,gz:-5}]},
-      {type:'bouncer',gx:3,gy:61,gz:-6,path:[{gx:2,gy:60,gz:-6},{gx:5,gy:61,gz:-6}]},
+      {type:'zigzagger',gx:5,gy:22,gz:0,path:[{gx:2,gy:21,gz:0},{gx:9,gy:22,gz:0}]},
+      {type:'skullhead',gx:6,gy:29,gz:0,path:[{gx:2,gy:28,gz:0},{gx:10,gy:29,gz:0}]},
+      {type:'rotatosquare',gx:10,gy:46,gz:-5,path:[{gx:10,gy:44,gz:-5},{gx:11,gy:52,gz:-5}]},
+      {type:'ghost',gx:10,gy:49,gz:-5,path:[{gx:8,gy:45,gz:-5},{gx:11,gy:55,gz:-5}]},
+      {type:'rollerball',gx:10,gy:60,gz:-5,small:true,path:[{gx:10,gy:56,gz:-5},{gx:10,gy:64,gz:-5}]},
     ]
   };
 }
 
-// ── Level 5 ─ GOLDEN LABYRINTH — gold, long winding maze, many enemies ────
+// ── Level 5 ─ GOLDEN LABYRINTH — gold, all mechanics, long winding maze ──
 function L5(){
   const T='gold';
   return {
@@ -359,6 +376,8 @@ function L5(){
       ...B(-3,0,0,7,4,T),
       ...C(0,4,0,8,T),
       ...B(-1,12,0,4,3,T),
+      // Conveyor section crossing
+      [-1,12,0,'conveyor_s'],[0,12,0,'conveyor_s'],[1,12,0,'conveyor_s'],
       ...C(-1,15,0,9,T),...C(0,15,0,9,T),
       ...B(-2,24,0,5,3,T),
       ...R(-2,27,0,9,T),...R(-2,28,0,9,T),
@@ -366,17 +385,24 @@ function L5(){
       ...R(0,36,0,8,T),...R(0,37,0,8,T),
       ...C(0,37,0,9,T),...C(1,37,0,9,T),
       ...B(-1,46,0,4,3,T),
+      // Bounce pad shortcut (optional risk)
+      [0,47,0,'bounce'],
       ...RampY(-1,49,0,7,4,T),
       ...C(0,56,-6,10,T),
       ...B(-2,66,-6,5,3,T),
+      // Chute — shortcut from mid-level to near-goal
+      [-1,66,-6,'chute_in'],
       ...R(-2,69,-6,8,T),
       ...C(5,69,-6,8,T),
       ...B(4,77,-6,4,3,T),
       ...RampY(4,80,-6,5,3,T),
       ...C(5,85,-10,6,T),
+      // Chute exit
+      [5,90,-10,'chute_out'],
       ...B(3,91,-10,5,4,'goal'),
     ],
     start:{gx:0,gy:1,gz:0}, goal:{gx:4,gy:92,gz:-10},
+    chutes:[{inX:-1,inY:66,outX:5,outY:90,outZ:-10}],
     enemies:[
       {type:'rollerball',gx:0,gy:6,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:0,gy:11,gz:0}]},
       {type:'rotatosquare',gx:0,gy:14,gz:0,path:[{gx:-1,gy:12,gz:0},{gx:2,gy:14,gz:0}]},
@@ -394,7 +420,7 @@ function L5(){
   };
 }
 
-// ── Level 6 ─ PURPLE STORM — purple, tight bridges, rotatosquare gauntlets
+// ── Level 6 ─ PURPLE STORM — purple, wave gauntlets + conveyor traps ──────
 function L6(){
   const T='purple';
   return {
@@ -404,8 +430,14 @@ function L6(){
       ...B(-2,12,-7,5,3,T),
       ...R(-6,13,-7,5,T),
       ...C(-6,14,-7,9,T),...C(-5,14,-7,9,T),
+      // Wave platform section
+      [-6,18,-7,'wave'],[-6,19,-7,'wave'],[-6,20,-7,'wave'],
+      [-5,18,-7,'wave'],[-5,19,-7,'wave'],[-5,20,-7,'wave'],
       ...B(-7,23,-7,5,3,T),
-      ...R(-7,26,-7,9,T),...R(-7,27,-7,9,T),
+      // Conveyor pushes toward edge
+      [-7,26,-7,'conveyor_e'],[-6,26,-7,'conveyor_e'],[-5,26,-7,'conveyor_e'],
+      [-4,26,-7,'conveyor_e'],[-3,26,-7,'conveyor_e'],
+      ...R(-7,27,-7,9,T),...R(-7,28,-7,9,T),
       ...C(1,27,-7,9,T),
       ...B(0,36,-7,4,3,T),
       ...RampY(0,39,-7,7,3,T),
@@ -436,24 +468,25 @@ function L6(){
   };
 }
 
-// ── Level 7 ─ DARK CROSSING — dark, stepping stones, near-miss bridges ────
+// ── Level 7 ─ DARK CROSSING — dark, stepping stones + bounce shortcuts ────
 function L7(){
   const T='dark';
   const tiles=[...B(-2,0,0,5,3,T)];
-  // Stepping stones — isolated 2x2 pads
   const stones=[[0,4,0],[2,7,-1],[-1,10,-1],[1,13,-2],[-1,16,-3],[2,19,-3],
     [0,22,-4],[-2,25,-4],[1,28,-5],[-1,31,-5],[0,34,-6],[2,37,-6]];
   for(const [x,y,z] of stones)for(let dx=0;dx<2;dx++)for(let dy=0;dy<2;dy++)tiles.push([x+dx,y+dy,z,T]);
-  // Connecting 1-tile bridges
+  // Bounce on 3 of the stepping stones
+  tiles.push([1,7,-1,'bounce'],[0,22,-4,'bounce'],[1,28,-5,'bounce']);
   tiles.push([1,6,-1],[0,9,-1],[1,12,-2],[0,15,-3],[1,18,-3],[1,21,-4],[-1,24,-4],[0,27,-5],[0,30,-5],[1,33,-6]);
-  // Corridor after stones
   for(let y=39;y<47;y++){tiles.push([0,y,-6,T]);tiles.push([1,y,-6,T]);}
   tiles.push(...B(-1,47,-6,4,3,T));
   tiles.push(...RampY(-1,50,-6,6,3,T));
-  for(let y=56;y<65;y++)tiles.push([0,y,-11,T]);
+  // Conveyor on the long bridge pulls toward exit
+  for(let y=56;y<65;y++) tiles.push([0,y,-11,'conveyor_s']);
   tiles.push(...B(-2,65,-11,5,3,T));
   tiles.push(...RampY(-1,68,-11,5,3,T));
-  for(let y=73;y<80;y++)tiles.push([0,y,-15,T],[1,y,-15,T]);
+  // Wave tiles on final bridge
+  for(let y=73;y<80;y++) tiles.push([0,y,-15,'wave'],[1,y,-15,'wave']);
   tiles.push(...B(-1,80,-15,4,4,'goal'));
   return {
     tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:0,gy:81,gz:-15},
@@ -474,7 +507,7 @@ function L7(){
   };
 }
 
-// ── Level 8 ─ THE GAUNTLET — green, narrow gauntlet runs with obstacles ───
+// ── Level 8 ─ THE GAUNTLET — green, conveyors all directions ─────────────
 function L8(){
   const T='green';
   return {
@@ -482,25 +515,37 @@ function L8(){
       ...B(-2,0,0,5,4,T),
       ...C(0,4,0,9,T),...C(1,4,0,9,T),
       ...R(2,12,0,7,T),...R(2,13,0,7,T),
+      // Conveyor section — gauntlet run
+      [2,14,0,'conveyor_e'],[3,14,0,'conveyor_e'],[4,14,0,'conveyor_e'],
+      [5,14,0,'conveyor_w'],[6,14,0,'conveyor_w'],[7,14,0,'conveyor_w'],
+      [2,15,0,'conveyor_w'],[3,15,0,'conveyor_w'],[4,15,0,'conveyor_w'],
+      [5,15,0,'conveyor_e'],[6,15,0,'conveyor_e'],[7,15,0,'conveyor_e'],
       ...C(8,13,0,8,T),...C(9,13,0,8,T),
       ...R(2,20,0,7,T),...R(2,21,0,7,T),
       ...C(2,21,0,8,T),...C(1,21,0,8,T),
       ...R(1,28,0,8,T),...R(1,29,0,8,T),
       ...C(8,29,0,8,T),...C(9,29,0,8,T),
-      ...R(2,36,0,7,T),...R(2,37,0,7,T),
+      // Wave section before ramp
+      [2,36,0,'wave'],[3,36,0,'wave'],[4,36,0,'wave'],
+      [5,36,0,'wave'],[6,36,0,'wave'],[7,36,0,'wave'],
+      ...R(2,37,0,7,T),
       ...C(2,37,0,7,T),...C(1,37,0,7,T),
       ...B(-1,44,0,4,3,T),
       ...RampY(-1,47,0,7,4,T),
       ...C(0,54,-6,10,T),
       ...B(-2,64,-6,5,3,T),
+      // Chute midway
+      [-1,64,-6,'chute_in'],
       ...R(-2,67,-6,9,T),...R(-2,68,-6,9,T),
       ...C(6,68,-6,9,T),
       ...B(5,77,-6,4,3,T),
       ...RampY(5,80,-6,6,3,T),
       ...C(6,86,-11,8,T),
+      [-1,68,-6,'chute_out'],
       ...B(4,94,-11,5,4,'goal'),
     ],
     start:{gx:0,gy:1,gz:0}, goal:{gx:5,gy:95,gz:-11},
+    chutes:[{inX:-1,inY:64,outX:-1,outY:68,outZ:-6}],
     enemies:[
       {type:'rollerball',gx:0,gy:5,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:1,gy:12,gz:0}]},
       {type:'rotatosquare',gx:5,gy:13,gz:0,path:[{gx:2,gy:12,gz:0},{gx:8,gy:13,gz:0}]},
@@ -519,75 +564,85 @@ function L8(){
   };
 }
 
-// ── Level 9 ─ CHAOS FACTORY — checker+lava mix, very long, max enemies ────
+// ── Level 9 ─ CHAOS FACTORY — checker+lava, all mechanics combined ────────
 function L9(){
   const tiles=[];
-  // Start
   for(let x=-2;x<=3;x++)for(let y=0;y<4;y++)tiles.push([x,y,0,'checker']);
-  // Mixed checker+lava sections
-  for(let y=4;y<12;y++){tiles.push([0,y,0,'checker']);tiles.push([1,y,0,'lava']);}
-  for(let x=1;x<=9;x++){tiles.push([x,12,0,'lava']);tiles.push([x,13,0,'checker']);}
-  for(let y=13;y<22;y++){tiles.push([9,y,0,'checker']);tiles.push([10,y,0,'lava']);}
-  for(let x=10;x>=2;x--){tiles.push([x,22,0,'lava']);tiles.push([x,23,0,'checker']);}
-  for(let y=23;y<32;y++){tiles.push([2,y,0,'checker']);tiles.push([3,y,0,'lava']);}
-  for(let x=2;x<=10;x++){tiles.push([x,32,0,'lava']);tiles.push([x,33,0,'checker']);}
-  for(let y=33;y<40;y++){tiles.push([10,y,0,'checker']);tiles.push([11,y,0,'lava']);}
-  // Wide platform
-  for(let x=8;x<=14;x++)for(let y=40;y<44;y++)tiles.push([x,y,0,'checker']);
-  // Ramp down
-  for(let s=0;s<7;s++)for(let j=0;j<3;j++)tiles.push([9+j,44+s,-s,'lava']);
-  // Bridge section
-  for(let y=51;y<61;y++){tiles.push([10,y,-6,'checker']);tiles.push([11,y,-6,'lava']);}
-  // Platform
-  for(let x=8;x<=14;x++)for(let y=61;y<64;y++)tiles.push([x,y,-6,'checker']);
-  // Ramp
-  for(let s=0;s<6;s++)for(let j=0;j<3;j++)tiles.push([9+j,64+s,-6-s,'lava']);
-  // 1-wide bridge
-  for(let y=70;y<80;y++)tiles.push([10,y,-11,'checker']);
-  // Final platform+goal
-  for(let x=8;x<=14;x++)for(let y=80;y<84;y++)tiles.push([x,y,-11,'goal']);
+  // Chaos conveyor grid
+  for(let y=4;y<9;y++){tiles.push([0,y,0,'conveyor_s']);tiles.push([1,y,0,'conveyor_n']);}
+  for(let x=1;x<=9;x++){tiles.push([x,9,0,'lava']);tiles.push([x,10,0,'checker']);}
+  for(let y=10;y<18;y++){tiles.push([9,y,0,'checker']);tiles.push([10,y,0,'lava']);}
+  for(let x=10;x>=2;x--){tiles.push([x,18,0,'lava']);tiles.push([x,19,0,'checker']);}
+  // Wave section
+  for(let y=19;y<26;y++){tiles.push([2,y,0,'wave']);tiles.push([3,y,0,'wave']);}
+  for(let x=2;x<=10;x++){tiles.push([x,26,0,'lava']);tiles.push([x,27,0,'checker']);}
+  for(let y=27;y<34;y++){tiles.push([10,y,0,'checker']);tiles.push([11,y,0,'lava']);}
+  // Bounce pad gauntlet
+  for(let x=8;x<=14;x++)for(let y=34;y<37;y++)tiles.push([x,y,0,'checker']);
+  tiles.push([9,35,0,'bounce'],[11,35,0,'bounce'],[13,35,0,'bounce']);
+  for(let s=0;s<7;s++)for(let j=0;j<3;j++)tiles.push([9+j,37+s,-s,'lava']);
+  // Chute shortcut
+  tiles.push([10,37,0,'chute_in']);
+  for(let y=44;y<54;y++){tiles.push([10,y,-6,'checker']);tiles.push([11,y,-6,'lava']);}
+  tiles.push([10,50,-6,'chute_out']);
+  for(let x=8;x<=14;x++)for(let y=54;y<57;y++)tiles.push([x,y,-6,'checker']);
+  for(let s=0;s<6;s++)for(let j=0;j<3;j++)tiles.push([9+j,57+s,-6-s,'lava']);
+  // Conveyor final run
+  for(let y=63;y<73;y++) tiles.push([10,y,-11,'conveyor_s']);
+  for(let x=8;x<=14;x++)for(let y=73;y<77;y++)tiles.push([x,y,-11,'goal']);
   return {
-    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:10,gy:81,gz:-11},
+    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:10,gy:74,gz:-11},
+    chutes:[{inX:10,inY:37,outX:10,outY:50,outZ:-6}],
     enemies:[
-      {type:'rollerball',gx:0,gy:6,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:1,gy:11,gz:0}]},
-      {type:'rotatosquare',gx:5,gy:12,gz:0,path:[{gx:1,gy:12,gz:0},{gx:9,gy:13,gz:0}]},
-      {type:'skullhead',gx:9,gy:15,gz:0,path:[{gx:9,gy:13,gz:0},{gx:10,gy:21,gz:0}]},
-      {type:'crab',gx:5,gy:22,gz:0,path:[{gx:2,gy:22,gz:0},{gx:10,gy:23,gz:0}]},
-      {type:'rotatosquare',gx:2,gy:27,gz:0,path:[{gx:2,gy:23,gz:0},{gx:3,gy:31,gz:0}]},
-      {type:'zigzagger',gx:6,gy:31,gz:0,path:[{gx:2,gy:30,gz:0},{gx:10,gy:33,gz:0}]},
-      {type:'rollerball',gx:9,gy:35,gz:0,small:true,path:[{gx:8,gy:33,gz:0},{gx:11,gy:39,gz:0}]},
-      {type:'rotatosquare',gx:11,gy:38,gz:0,path:[{gx:8,gy:33,gz:0},{gx:11,gy:39,gz:0}]},
-      {type:'ghost',gx:10,gy:42,gz:0,path:[{gx:8,gy:40,gz:0},{gx:14,gy:42,gz:0}]},
-      {type:'skullhead',gx:10,gy:53,gz:-6,path:[{gx:10,gy:51,gz:-6},{gx:11,gy:60,gz:-6}]},
-      {type:'rotatosquare',gx:11,gy:56,gz:-6,path:[{gx:10,gy:51,gz:-6},{gx:11,gy:60,gz:-6}]},
-      {type:'crab',gx:10,gy:63,gz:-6,path:[{gx:8,gy:61,gz:-6},{gx:14,gy:62,gz:-6}]},
-      {type:'rollerball',gx:10,gy:73,gz:-11,small:true,path:[{gx:10,gy:70,gz:-11},{gx:10,gy:79,gz:-11}]},
-      {type:'rotatosquare',gx:10,gy:76,gz:-11,path:[{gx:10,gy:70,gz:-11},{gx:10,gy:79,gz:-11}]},
+      {type:'rollerball',gx:0,gy:5,gz:0,small:true,path:[{gx:0,gy:4,gz:0},{gx:1,gy:8,gz:0}]},
+      {type:'rotatosquare',gx:5,gy:9,gz:0,path:[{gx:1,gy:9,gz:0},{gx:9,gy:10,gz:0}]},
+      {type:'skullhead',gx:9,gy:12,gz:0,path:[{gx:9,gy:10,gz:0},{gx:10,gy:17,gz:0}]},
+      {type:'crab',gx:5,gy:18,gz:0,path:[{gx:2,gy:18,gz:0},{gx:10,gy:19,gz:0}]},
+      {type:'rotatosquare',gx:2,gy:22,gz:0,path:[{gx:2,gy:19,gz:0},{gx:3,gy:25,gz:0}]},
+      {type:'zigzagger',gx:6,gy:26,gz:0,path:[{gx:2,gy:26,gz:0},{gx:10,gy:27,gz:0}]},
+      {type:'rollerball',gx:9,gy:29,gz:0,small:true,path:[{gx:8,gy:27,gz:0},{gx:11,gy:33,gz:0}]},
+      {type:'rotatosquare',gx:11,gy:32,gz:0,path:[{gx:8,gy:27,gz:0},{gx:11,gy:33,gz:0}]},
+      {type:'ghost',gx:10,gy:35,gz:0,path:[{gx:8,gy:34,gz:0},{gx:14,gy:35,gz:0}]},
+      {type:'skullhead',gx:10,gy:46,gz:-6,path:[{gx:10,gy:44,gz:-6},{gx:11,gy:53,gz:-6}]},
+      {type:'rotatosquare',gx:11,gy:49,gz:-6,path:[{gx:10,gy:44,gz:-6},{gx:11,gy:53,gz:-6}]},
+      {type:'crab',gx:10,gy:56,gz:-6,path:[{gx:8,gy:55,gz:-6},{gx:14,gy:55,gz:-6}]},
+      {type:'rollerball',gx:10,gy:66,gz:-11,small:true,path:[{gx:10,gy:63,gz:-11},{gx:10,gy:72,gz:-11}]},
+      {type:'rotatosquare',gx:10,gy:69,gz:-11,path:[{gx:10,gy:63,gz:-11},{gx:10,gy:72,gz:-11}]},
     ]
   };
 }
 
-// ── Level 10 ─ FINAL DESCENT — all tile types, extreme length, max enemies
+// ── Level 10 ─ FINAL DESCENT — all types, all mechanics, extreme length ───
 function L10(){
   const tiles=[
     ...B(-2,0,0,5,4,'normal'),
     ...RampY(-1,4,0,6,3,'normal'),
     ...B(-1,10,-5,5,3,'ice'),
+    // Conveyor ice section — extra slippery!
+    [-1,10,-5,'conveyor_s'],[0,10,-5,'conveyor_s'],[1,10,-5,'conveyor_s'],
     ...C(0,13,-5,8,'ice'),
     ...B(-2,21,-5,5,3,'blue'),
     ...R(-2,24,-5,9,'blue'),...R(-2,25,-5,9,'blue'),
     ...C(6,25,-5,9,'blue'),
     ...B(5,34,-5,4,3,'red'),
+    // Bounce pads on red platform
+    [5,35,-5,'bounce'],[6,35,-5,'bounce'],[7,35,-5,'bounce'],
     ...RampY(5,37,-5,6,3,'red'),
+    // Chute at bottom of ramp — skip chunk
+    [6,43,-10,'chute_in'],
     ...C(6,43,-10,9,'gold'),
     ...B(4,52,-10,4,3,'gold'),
     ...R(0,53,-10,5,'purple'),...R(0,54,-10,5,'purple'),
     ...C(0,54,-10,9,'purple'),...C(1,54,-10,9,'purple'),
     ...B(-1,63,-10,4,3,'purple'),
+    [6,58,-10,'chute_out'],
     ...RampY(-1,66,-10,6,3,'dark'),
-    ...C(0,72,-15,10,'dark'),
+    // Wave bridge
+    ...C(0,72,-15,10,'wave').map(t=>[...t.slice(0,3),'wave']),
     ...B(-2,82,-15,5,3,'checker'),
-    ...R(-2,85,-15,9,'checker'),
+    // Conveyor chaos finale
+    [-2,85,-15,'conveyor_e'],[-1,85,-15,'conveyor_e'],[0,85,-15,'conveyor_w'],[1,85,-15,'conveyor_w'],[2,85,-15,'conveyor_e'],[3,85,-15,'conveyor_e'],
+    ...R(-2,86,-15,9,'checker'),
     ...C(6,85,-15,9,'checker'),
     ...B(5,94,-15,4,3,'lava'),
     ...RampY(5,97,-15,5,3,'lava'),
@@ -595,7 +650,9 @@ function L10(){
     ...B(4,108,-19,5,4,'goal'),
   ];
   return {
-    tiles, start:{gx:0,gy:1,gz:0}, goal:{gx:5,gy:109,gz:-19},
+    tiles:tiles.filter(t=>Array.isArray(t)&&t.length>=3),
+    start:{gx:0,gy:1,gz:0}, goal:{gx:5,gy:109,gz:-19},
+    chutes:[{inX:6,inY:43,outX:6,outY:58,outZ:-10}],
     enemies:[
       {type:'rollerball',gx:0,gy:6,gz:-1,small:true,path:[{gx:-1,gy:5,gz:0},{gx:1,gy:9,gz:-4}]},
       {type:'rotatosquare',gx:0,gy:12,gz:-5,path:[{gx:-1,gy:10,gz:-5},{gx:2,gy:12,gz:-5}]},
@@ -967,6 +1024,8 @@ class Enemy{
 //  PHYSICS
 // =============================================================================
 let tileMap=[], goalPos=null;
+let chutes=[];       // [{inX,inY,outX,outY,outZ}]
+let waveTiles=[];    // [{gx,gy,origZ,freq,amp,phase}]
 let player={x:0,y:0,z:0,vx:0,vy:0,vz:0,dead:false};
 let enemies=[];
 let state='start', currentLevel=0, lives=3, score=0, levelTime=60;
@@ -1000,6 +1059,50 @@ function physStep(dt){
   const gnd=getTileBelow(player.x,player.y,player.z);
   if(gnd!==null&&player.z<=gnd){player.z=gnd;player.vz=0;}
   if(player.z<-22){triggerDeath('fall');return;}
+
+  // ── Special tile mechanics ─────────────────────────────────────────────────
+  // Find the tile the player is standing on
+  if(gnd!==null && Math.abs(player.z-gnd)<0.15){
+    const standTile=tileMap.find(t=>
+      Math.abs(t[0]-player.x)<0.72&&Math.abs(t[1]-player.y)<0.72&&t[2]===gnd
+    );
+    if(standTile){
+      const ttype=standTile[3]||'normal';
+      // Conveyor belts — push in direction
+      const convForce=iceLevel?5:8;
+      if(ttype==='conveyor_n'){player.vy-=convForce*dt;}
+      if(ttype==='conveyor_s'){player.vy+=convForce*dt;}
+      if(ttype==='conveyor_e'){player.vx+=convForce*dt;}
+      if(ttype==='conveyor_w'){player.vx-=convForce*dt;}
+      // Bounce pad — launch upward
+      if(ttype==='bounce'&&player.vz<=0){
+        player.vz=14; // big upward pop
+        player.vx*=0.3; player.vy*=0.3; // scrub horizontal
+      }
+      // Wave tile — oscillates up/down (handled by tileWaveOffset)
+      // Chute — teleport to matching chute_out
+      if(ttype==='chute_in'&&!player._inChute){
+        const outlet=chutes.find(c=>c.inX===Math.round(player.x)&&c.inY===Math.round(player.y));
+        if(outlet){
+          player._inChute=true;
+          setTimeout(()=>{
+            player.x=outlet.outX; player.y=outlet.outY; player.z=outlet.outZ||gnd;
+            player.vx*=0.3; player.vy*=0.3; player.vz=2;
+            player._inChute=false;
+          },400);
+        }
+      }
+    }
+  }
+
+  // Wave tiles — oscillate gz up/down (affects player if standing on them)
+  if(waveTiles.length){
+    const wt=Date.now()/1000;
+    for(const w of waveTiles){
+      const idx=tileMap.findIndex(t=>t[0]===w.gx&&t[1]===w.gy&&t[2]===w.origZ);
+      if(idx>=0) tileMap[idx][2]=w.origZ+Math.sin(wt*w.freq+w.phase)*w.amp;
+    }
+  }
 
   // Enemy interactions
   for(const e of enemies){
@@ -1166,6 +1269,11 @@ function loadLevel(n){
   tileMap=def.tiles;
   goalPos=def.goal;
   iceLevel=!!def.icePhysics;
+  chutes=def.chutes||[];
+  // Build waveTiles from tiles of type 'wave'
+  waveTiles=tileMap.filter(t=>t[3]==='wave').map((t,i)=>({
+    gx:t[0],gy:t[1],origZ:t[2],freq:1.5+i*0.3,amp:0.6,phase:i*0.9
+  }));
   player.x=def.start.gx; player.y=def.start.gy; player.z=def.start.gz;
   player.vx=0;player.vy=0;player.vz=0;player.dead=false;
   // Place camera so the player starts centered horizontally and 35% from top.
