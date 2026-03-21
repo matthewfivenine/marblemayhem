@@ -1177,12 +1177,23 @@ function physStep(dt){
   // Phys-enabled enemies
   for(const e of enemies){
     if(!e.physEnabled||e.dead) continue;
-    e.vz-=22*dt; e.vx*=0.87; e.vy*=0.87;
-    e.physX+=e.vx*dt; e.physY+=e.vy*dt; e.physZ+=e.vz*dt;
-    const eg=getTileBelow(e.physX,e.physY,e.physZ);
-    if(eg!==null&&e.physZ<=eg){e.physZ=eg;e.vz=0;}
-    if(e.physZ<-40) e.dead=true; // die when truly deep
-    e.gx=e.physX; e.gy=e.physY; e.gz=e.physZ;
+    e.vz -= 22*dt;
+    e.vx *= 0.87; e.vy *= 0.87;
+    // X axis with wall collision
+    e.physX += e.vx*dt;
+    if(getTileAbove(e.physX, e.physY, e.physZ)){
+      e.physX -= e.vx*dt; e.vx *= -0.2;
+    }
+    // Y axis with wall collision
+    e.physY += e.vy*dt;
+    if(getTileAbove(e.physX, e.physY, e.physZ)){
+      e.physY -= e.vy*dt; e.vy *= -0.2;
+    }
+    e.physZ += e.vz*dt;
+    const eg = getTileBelow(e.physX, e.physY, e.physZ);
+    if(eg !== null && e.physZ <= eg){ e.physZ = eg; e.vz = 0; }
+    if(e.physZ < -40) e.dead = true;
+    e.gx = e.physX; e.gy = e.physY; e.gz = e.physZ;
   }
 
   // Camera: smoothly keep player at (canvas.width/2, canvas.height*0.35) on screen
@@ -1264,31 +1275,29 @@ function render(ts){
     }
   }
 
-  // Player — drawn last, always on top of tiles
-  // Visibility: hide ball only when it has physically fallen well below tile surface
-  // (i.e. it rolled off an edge and is genuinely below the geometry)
+  // Player — always draw unless truly fallen deep off the map
   if(!player.dead){
-    // Only look BELOW the ball for the ground shadow — never above it.
-    // Using player.z (not player.z+2) prevents wall tiles from being mistaken for ground.
-    // For shadow: find ground strictly below ball (wall tiles excluded by -0.2 offset)
-    const gn = getTileBelow(player.x, player.y, player.z - 0.2);
-    const onSurface = gn !== null && Math.abs(player.z - gn) < 1.5;
-    const fellOff = player.z < -1.5;
+    const ps = toScr(player.x, player.y, player.z);
 
-    if(!fellOff || onSurface){
-      const ps=toScr(player.x,player.y,player.z);
-      // Shadow: only draw when tile is at or below the ball's feet (gn <= player.z)
-      if(gn!==null && gn <= player.z - 0.1){  // tile must be clearly below ball
-        const gs2=toScr(player.x,player.y,gn);
-        const sa=Math.max(0,.42-(player.z-gn)*.04);
-        ctx.beginPath();ctx.ellipse(gs2.x,gs2.y,17,9,0,0,Math.PI*2);
-        ctx.fillStyle=`rgba(0,0,0,${sa})`;ctx.fill();
+    // Shadow: find ground tile STRICTLY below ball (not a wall tile)
+    // Use player.z-0.3 offset to stay well clear of wall tiles at same z level
+    const gnShadow = getTileBelow(player.x, player.y, player.z - 0.3);
+    if(gnShadow !== null){
+      const gs2 = toScr(player.x, player.y, gnShadow);
+      const dist = player.z - gnShadow;
+      if(dist >= 0 && dist < 8){  // only draw when close enough to matter
+        const sa = Math.max(0, 0.42 - dist * 0.06);
+        ctx.beginPath(); ctx.ellipse(gs2.x, gs2.y, 17, 9, 0, 0, Math.PI*2);
+        ctx.fillStyle = `rgba(0,0,0,${sa})`; ctx.fill();
       }
-      const fallDepth = gn !== null ? gn - player.z : 0;
-      ctx.globalAlpha = Math.max(0, 1 - fallDepth * 0.3);
-      drawMarble(ps.x,ps.y,16,'#aaddff','#3388ee','#55aaff',true);
-      ctx.globalAlpha = 1;
     }
+
+    // Ball visibility: always show unless physically fallen deep below all geometry
+    // Fade starts at z=-6, gone at z=-18
+    const alpha = player.z >= -6 ? 1 : Math.max(0, 1 - ((-6 - player.z) / 12));
+    ctx.globalAlpha = alpha;
+    drawMarble(ps.x, ps.y, 16, '#aaddff', '#3388ee', '#55aaff', true);
+    ctx.globalAlpha = 1;
   }
   requestAnimationFrame(render);
 }
