@@ -170,7 +170,7 @@ function rotateCamera() {
   camRotation = (camRotation + 1) % 4;
   positionCamera();
 }
-document.getElementById('rot-btn').addEventListener('click', rotateCamera);
+// rotateCamera listener added at bottom after all vars are defined
 
 resizeRenderer(); // now safe — rebuildCamera is defined
 
@@ -204,7 +204,7 @@ scene.add(fill);
 // TILE_H: how tall each block is in world units.
 // Each gz step = 1 world unit vertical. So gz=-4 means 4 units below gz=0.
 const TILE_W = 1.0;
-const TILE_H = 1.6;  // TALL blocks — critical for the cliff-wall aesthetic
+const TILE_H = 1.0;  // Block height — 1:1 ratio gives clean cliff walls
 const tileGeo = new THREE.BoxGeometry(TILE_W, TILE_H, TILE_W);
 
 // Ramp visuals handled by stacked tile steps
@@ -302,7 +302,9 @@ function g2w(gx, gy, gz) {
   return new THREE.Vector3(gx, gz, gy);
 }
 
+
 function buildSceneTiles(tiles) {
+  // Cleanup
   tileObjects.forEach(o => {
     scene.remove(o.mesh);
     if (o.indicator) scene.remove(o.indicator);
@@ -310,123 +312,164 @@ function buildSceneTiles(tiles) {
   if (tileObjects._walls) tileObjects._walls.forEach(w => scene.remove(w));
   tileObjects = [];
 
-  // Each tile is a box. Height = TILE_H normally.
-  // For exposed edges (no neighbor or lower neighbor), extend down so sides
-  // fill the gap — prevents holes between step levels.
-  // Build neighbor height map first.
-  const colTop = new Map(); // highest gz per column
+  const extraMeshes = [];
+
+  // Detect ramp_s runs: group consecutive tiles with same x at consecutive y with gz-1
+  const rampTileSet = new Set(); // keys of step tiles to hide
+  
+  // Group ramp tiles by x-column
+  const byXY = new Map();
+  tiles.forEach(t => {
+    if (t[3] && t[3].startsWith('ramp_s:')) {
+      const k = `${Math.round(t[0])},${Math.round(t[1])}`;
+      byXY.set(k, {gz: t[2], base: t[3].slice(7)});
+    }
+  });
+
+  // Find rectangular ramp runs
+  const seenRamp = new Set();
+  const runs = [];
+  [...byXY.keys()].sort((a,b) => {
+    const [ax,ay] = a.split(',').map(Number);
+    const [bx,by] = b.split(',').map(Number);
+    return ay-by||ax-bx;
+  }).forEach(key => {
+    if (seenRamp.has(key)) return;
+    const [gx0,gy0] = key.split(',').map(Number);
+    const {gz:gz0, base} = byXY.get(key);
+    
+    // Find x extent
+    let xMin=gx0, xMax=gx0;
+    while (byXY.has(`${xMin-1},${gy0}`) && !seenRamp.has(`${xMin-1},${gy0}`)) xMin--;
+    while (byXY.has(`${xMax+1},${gy0}`) && !seenRamp.has(`${xMax+1},${gy0}`)) xMax++;
+    
+    // Walk south for run length
+    let len=1;
+    while (len<60) {
+      let ok=true;
+      for (let xi=xMin;xi<=xMax;xi++) {
+        const e = byXY.get(`${xi},${gy0+len}`);
+        if (!e || Math.abs(e.gz-(gz0-len))>0.05 || seenRamp.has(`${xi},${gy0+len}`)) {ok=false;break;}
+      }
+      if (!ok) break;
+      len++;
+    }
+    
+    // Mark all tiles in run
+    for (let dy=0;dy<len;dy++)
+      for (let xi=xMin;xi<=xMax;xi++) {
+        const k2=`${xi},${gy0+dy}`;
+        seenRamp.add(k2);
+        rampTileSet.add(k2);
+      }
+    
+    runs.push({xMin,xMax,gy0,len,gz0,base});
+  });
+
+  // Build each ramp as a simple inclined plane mesh
+  runs.forEach(({xMin,xMax,gy0,len,gz0,base}) => {
+    const W = xMax - xMin + 1;
+    const col = TILE_COLORS[base] || TILE_COLORS.normal;
+    const mat = new THREE.MeshLambertMaterial({color: col.top, side: THREE.DoubleSide});
+
+    // Four corners of the ramp top surface in world space (x=gx, y=gz, z=gy)
+    const x0 = xMin - 0.5, x1 = xMax + 0.5;
+    const zN = gy0 - 0.5, zS = gy0 + len - 0.5;
+    const yN = gz0, yS = gz0 - len;
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+      x0,yN,zN,  x1,yN,zN,  x1,yS,zS,  x0,yS,zS
+    ]), 3));
+    geo.setIndex([0,2,1, 0,3,2]);
+    geo.computeVertexNormals();
+
+    const mesh = new THREE.Mesh(geo, mat);
+    scene.add(mesh);
+    extraMeshes.push(mesh);
+  });
+
+  // Build column height map for box depth
+  const colTop = new Map();
   tiles.forEach(t => {
     const k = `${Math.round(t[0])},${Math.round(t[1])}`;
     const prev = colTop.get(k);
     if (prev === undefined || t[2] > prev) colTop.set(k, t[2]);
   });
 
+  // Build regular tile boxes (skip ramp step tiles)
   tiles.forEach(t => {
-    const [gx, gy, gz, type] = t;
-    const alt = (Math.round(gx) + Math.round(gy)) % 2 === 0;
-    const mats = getTileMaterials(type || 'normal', alt);
+    const [gx, gy, gz, rawType] = t;
+    const isRamp = rawType && rawType.startsWith('ramp_');
+    const type = isRamp ? rawType.slice(rawType.indexOf(':')+1) : (rawType || 'normal');
+    const key = `${Math.round(gx)},${Math.round(gy)}`;
+    
+    const alt = (Math.round(gx)+Math.round(gy))%2===0;
+    const mats = getTileMaterials(type, alt);
 
-    // Height: extend down to cover gaps to lower neighbors.
-    // Find the minimum neighbor gz among all 4 directions.
-    const VOID = 20;
-    let dropTo = gz - VOID; // default void depth
+    const VOID=20;
+    let dropTo=gz-VOID;
     for (const [dx,dz] of [[1,0],[-1,0],[0,1],[0,-1]]) {
-      const nh = colTop.get(`${Math.round(gx+dx)},${Math.round(gy+dz)}`);
-      if (nh !== undefined) {
-        // Extend to cover gap with lower neighbor (or same height = no gap)
-        if (nh < gz) dropTo = Math.max(dropTo, nh - TILE_H);
-      }
+      const nh=colTop.get(`${Math.round(gx+dx)},${Math.round(gy+dz)}`);
+      if (nh!==undefined&&nh<gz) dropTo=Math.max(dropTo,nh-TILE_H);
     }
-    const tileH = Math.max(TILE_H, gz - dropTo);
+    const tileH=Math.max(TILE_H,gz-dropTo);
 
-    const geo = new THREE.BoxGeometry(TILE_W, tileH, TILE_W);
-    const mesh = new THREE.Mesh(geo, mats);
-    const wp = g2w(gx, gy, gz);
-    mesh.position.set(wp.x, gz - tileH/2, wp.z);
-    mesh.receiveShadow = true;
+    const geo=new THREE.BoxGeometry(TILE_W,tileH,TILE_W);
+    const meshY=gz-tileH/2;
+    const mesh=new THREE.Mesh(geo,mats);
+    const wp=g2w(gx,gy,gz);
+    mesh.position.set(wp.x,meshY,wp.z);
+    mesh.receiveShadow=true;
+    
+    // Hide physics-only ramp step tiles
+    if (rampTileSet.has(key)) mesh.visible=false;
+    
     scene.add(mesh);
 
-    let indicator = null;
-    if (type && type.startsWith('conveyor')) {
-      // Arrow made of two triangles: a shaft + arrowhead
-      const dir = type.split('_')[1]; // n/s/e/w
-      const arrowGroup = new THREE.Group();
-      // Arrow shaft
-      const shaftGeo = new THREE.PlaneGeometry(0.18, 0.55);
-      const arrowMat = new THREE.MeshBasicMaterial({color:0xff6600,side:THREE.DoubleSide,depthWrite:false});
-      const shaft = new THREE.Mesh(shaftGeo, arrowMat);
-      // Arrowhead triangle
-      const headGeo = new THREE.BufferGeometry();
-      headGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
-        0,0,0, -0.22,0,0, 0,0,-0.28
-      ]),3));
-      headGeo.computeVertexNormals();
-      const head = new THREE.Mesh(headGeo, arrowMat);
-      arrowGroup.add(shaft, head);
-      arrowGroup.rotation.x = -Math.PI/2;
-      // Rotate group to point in direction
-      const rot = {n:Math.PI,s:0,e:-Math.PI/2,w:Math.PI/2}[dir]||0;
-      arrowGroup.rotation.z = rot;
-      shaft.position.set(0,-0.1,0);
-      head.position.set(0,0.18,0);
-      arrowGroup.position.set(wp.x, gz+0.02, wp.z);
-      scene.add(arrowGroup);
-      indicator = arrowGroup;
-    } else if (type === 'wave') {
-      // Sine wave shape using small boxes
-      const waveGroup = new THREE.Group();
-      const wm = new THREE.MeshBasicMaterial({color:0x00eeff,transparent:true,opacity:0.8,depthWrite:false});
-      for(let i=0;i<5;i++){
-        const seg = new THREE.Mesh(new THREE.BoxGeometry(0.1,0.05+Math.abs(Math.sin(i*1.2))*0.18,0.12),wm);
-        seg.position.set(-0.28+i*0.14, 0.02+Math.abs(Math.sin(i*1.2))*0.09, 0);
-        waveGroup.add(seg);
-      }
-      waveGroup.rotation.x = -Math.PI/2;
-      waveGroup.position.set(wp.x, gz+0.02, wp.z);
-      scene.add(waveGroup);
-      indicator = waveGroup;
-    } else if (type === 'chute_in') {
-      // Downward spiral indicator — yellow funnel
-      const cg = new THREE.Group();
-      const cm = new THREE.MeshBasicMaterial({color:0xffdd00,transparent:true,opacity:0.9,depthWrite:false});
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.28,0.05,4,8),cm);
-      ring.rotation.x = -Math.PI/2;
-      const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.1,0.2,4),cm);
-      arrow.position.y = -0.1;
-      cg.add(ring,arrow);
-      cg.position.set(wp.x, gz+0.15, wp.z);
-      scene.add(cg);
-      indicator = cg;
-    } else if (type === 'chute_out') {
-      // Upward indicator — teal
-      const cg = new THREE.Group();
-      const cm = new THREE.MeshBasicMaterial({color:0x00ffaa,transparent:true,opacity:0.9,depthWrite:false});
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.28,0.05,4,8),cm);
-      ring.rotation.x = -Math.PI/2;
-      const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.1,0.2,4),cm);
-      arrow.position.y = 0.2;
-      cg.add(ring,arrow);
-      cg.position.set(wp.x, gz+0.15, wp.z);
-      scene.add(cg);
-      indicator = cg;
-    } else if (type === 'bounce') {
-      // Pink X shape
-      const bg = new THREE.Group();
-      const bm = new THREE.MeshBasicMaterial({color:0xff44ff,depthWrite:false});
-      const b1 = new THREE.Mesh(new THREE.BoxGeometry(0.6,0.06,0.12),bm);
-      b1.rotation.y = Math.PI/4;
-      const b2 = new THREE.Mesh(new THREE.BoxGeometry(0.6,0.06,0.12),bm);
-      b2.rotation.y = -Math.PI/4;
-      bg.add(b1,b2);
-      bg.rotation.x = -Math.PI/2;
-      bg.position.set(wp.x, gz+0.02, wp.z);
-      scene.add(bg);
-      indicator = bg;
+    // Mechanic indicators
+    let indicator=null;
+    if (type&&type.startsWith('conveyor')) {
+      const dir=type.split('_')[1];
+      const ag=new THREE.Group();
+      const am=new THREE.MeshBasicMaterial({color:0xff6600,side:THREE.DoubleSide,transparent:true,opacity:0.9,depthWrite:false});
+      const shaft=new THREE.Mesh(new THREE.PlaneGeometry(0.18,0.55),am);
+      const hg=new THREE.BufferGeometry();
+      hg.setAttribute('position',new THREE.BufferAttribute(new Float32Array([0,0,0,-0.22,0,0,0,0,-0.28]),3));
+      hg.computeVertexNormals();
+      const head=new THREE.Mesh(hg,am);
+      ag.add(shaft,head);
+      ag.rotation.x=-Math.PI/2;
+      ag.rotation.z={n:Math.PI,s:0,e:-Math.PI/2,w:Math.PI/2}[dir]||0;
+      shaft.position.set(0,-0.1,0);head.position.set(0,0.18,0);
+      ag.position.set(wp.x,gz+0.02,wp.z);
+      scene.add(ag);indicator=ag;
+    } else if (type==='bounce') {
+      const bg=new THREE.Group();
+      const bm=new THREE.MeshBasicMaterial({color:0xff44ff,depthWrite:false});
+      const b1=new THREE.Mesh(new THREE.BoxGeometry(0.6,0.06,0.12),bm);b1.rotation.y=Math.PI/4;
+      const b2=new THREE.Mesh(new THREE.BoxGeometry(0.6,0.06,0.12),bm);b2.rotation.y=-Math.PI/4;
+      bg.add(b1,b2);bg.rotation.x=-Math.PI/2;bg.position.set(wp.x,gz+0.02,wp.z);
+      scene.add(bg);indicator=bg;
+    } else if (type==='wave') {
+      const wg=new THREE.Group();
+      const wm=new THREE.MeshBasicMaterial({color:0x00eeff,transparent:true,opacity:0.8,depthWrite:false});
+      for(let i=0;i<5;i++){const s=new THREE.Mesh(new THREE.BoxGeometry(0.1,0.05+Math.abs(Math.sin(i*1.2))*0.18,0.12),wm);s.position.set(-0.28+i*0.14,0.02+Math.abs(Math.sin(i*1.2))*0.09,0);wg.add(s);}
+      wg.rotation.x=-Math.PI/2;wg.position.set(wp.x,gz+0.02,wp.z);
+      scene.add(wg);indicator=wg;
+    } else if (type==='chute_in'||type==='chute_out') {
+      const cg=new THREE.Group();
+      const cm=new THREE.MeshBasicMaterial({color:type==='chute_in'?0xffdd00:0x00ffaa,transparent:true,opacity:0.9,depthWrite:false});
+      const ring=new THREE.Mesh(new THREE.TorusGeometry(0.28,0.05,4,8),cm);ring.rotation.x=-Math.PI/2;
+      const arr=new THREE.Mesh(new THREE.ConeGeometry(0.1,0.2,4),cm);arr.position.y=type==='chute_in'?-0.1:0.2;
+      cg.add(ring,arr);cg.position.set(wp.x,gz+0.15,wp.z);
+      scene.add(cg);indicator=cg;
     }
 
     tileObjects.push({mesh,indicator,gx,gy,gz,type,tileH});
   });
-  tileObjects._walls = [];
+
+  tileObjects._walls = extraMeshes;
 }
 
 // Goal flag
@@ -938,22 +981,15 @@ function CurveDown(x,y,z,len,w,drop,t){
 }
 function DiagBridge(x,y,z,len,t){const a=[];for(let i=0;i<len;i++)a.push([x+i,y+i,z,t]);return a;}
 
-const LEVEL_NAMES=[
-  'BEGINNER\'S LUCK','THE DESCENT','CROSSROADS',
-  'VALLEY RUN','GOLDEN PEAKS','ICE CANYON',
-  'DARK MAZE','BRUISER ALLEY','LAVA FIELDS','FINAL CHAOS'
-];
+const LEVEL_NAMES=["BEGINNER'S LUCK",'THE DESCENT','WAVE MACHINE','VALLEY RUN','GOLDEN PEAKS','ICE CANYON','DARK MAZE','BRUISER ALLEY','LAVA FIELDS','FINAL CHAOS'];
 const LEVEL_TIMES=[75,70,65,62,58,55,50,46,42,38];
 
-// ── GEOMETRY HELPERS ──────────────────────────────────────────────────────────
+// ── GEOMETRY HELPERS ─────────────────────────────────────────────
 function R(x,y,z,l,t){const a=[];for(let i=0;i<l;i++)a.push([x+i,y,z,t]);return a;}
 function C(x,y,z,l,t){const a=[];for(let i=0;i<l;i++)a.push([x,y+i,z,t]);return a;}
 function B(x,y,z,w,h,t){const a=[];for(let i=0;i<w;i++)for(let j=0;j<h;j++)a.push([x+i,y+j,z,t]);return a;}
-// Ramp: steps descending south (each gy step = -1 gz)
-function RY(x,y,z,l,w,t){const a=[];for(let i=0;i<l;i++)for(let j=0;j<w;j++)a.push([x+j,y+i,z-i,t]);return a;}
-// Ramp descending east (each gx step = -1 gz)
-function RX(x,y,z,l,h,t){const a=[];for(let i=0;i<l;i++)for(let j=0;j<h;j++)a.push([x+i,y+j,z-i,t]);return a;}
-// Valley: U-shape across width (parabolic dip)
+function RY(x,y,z,l,w,t){const a=[];for(let i=0;i<l;i++)for(let j=0;j<w;j++)a.push([x+j,y+i,z-i,'ramp_s:'+(t||'normal')]);return a;}
+function RX(x,y,z,l,h,t){const a=[];for(let i=0;i<l;i++)for(let j=0;j<h;j++)a.push([x+i,y+j,z-i,'ramp_e:'+(t||'normal')]);return a;}
 function VY(x,y,z,l,w,depth,t){
   const a=[];
   for(let i=0;i<l;i++)for(let j=0;j<w;j++){
@@ -962,425 +998,168 @@ function VY(x,y,z,l,w,depth,t){
   }
   return a;
 }
-// Wall tile: raised +1 gz along a row
 function WR(x,y,z,l,t){const a=[];for(let i=0;i<l;i++)a.push([x+i,y,z+1,t]);return a;}
 function WC(x,y,z,l,t){const a=[];for(let i=0;i<l;i++)a.push([x,y+i,z+1,t]);return a;}
 
-// ── L1: BEGINNER'S LUCK — grey, gentle intro ────────────────────────────────
-// Wide start → ramp → wide flat → ramp → narrow zigzag → goal
-// gz: 0 → -4 → -8
-function L1(){const T='normal';return{tiles:[
-  // Wide start 8×5
-  ...B(-4,0,0,8,5,'start'),
-  // Ramp south gz 0→-4
-  ...RY(-4,5,0,5,8,T),
-  // Wide platform gz=-4, 8×12
-  ...B(-4,10,-4,8,12,T),
-  // Ramp south gz -4→-8
-  ...RY(-4,22,-4,5,8,T),
-  // Wide lower 8×8
-  ...B(-4,27,-8,8,8,T),
-  // Narrow 2-wide zigzag: south 2×6, then jog west, south again
-  ...B(0,35,-8,2,7,T),        // narrow south
-  ...B(-3,42,-8,5,2,T),       // jog west
-  ...B(-3,44,-8,2,7,T),       // narrow south again
-  // Goal
-  ...B(-4,51,-8,8,5,'goal'),
-],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:52,gz:-8},
+// ── L1: BEGINNER'S LUCK ─────────────────────────────────────────────────
+function L1(){return{tiles:[
+  [-4,0,0,'start'],[-4,1,0,'start'],[-4,2,0,'start'],[-4,3,0,'start'],[-4,4,0,'start'],[-3,0,0,'start'],[-3,1,0,'start'],[-3,2,0,'start'],[-3,3,0,'start'],[-3,4,0,'start'],[-2,0,0,'start'],[-2,1,0,'start'],[-2,2,0,'start'],[-2,3,0,'start'],[-2,4,0,'start'],[-1,0,0,'start'],[-1,1,0,'start'],[-1,2,0,'start'],[-1,3,0,'start'],[-1,4,0,'start'],[0,0,0,'start'],[0,1,0,'start'],[0,2,0,'start'],[0,3,0,'start'],[0,4,0,'start'],[1,0,0,'start'],[1,1,0,'start'],[1,2,0,'start'],[1,3,0,'start'],[1,4,0,'start'],[2,0,0,'start'],[2,1,0,'start'],[2,2,0,'start'],[2,3,0,'start'],[2,4,0,'start'],[3,0,0,'start'],[3,1,0,'start'],[3,2,0,'start'],[3,3,0,'start'],[3,4,0,'start'],[-4,5,0,'normal'],[-3,5,0,'normal'],[-2,5,0,'normal'],[-1,5,0,'normal'],[0,5,0,'normal'],[1,5,0,'normal'],[2,5,0,'normal'],[3,5,0,'normal'],[-4,6,-1,'normal'],[-3,6,-1,'normal'],[-2,6,-1,'normal'],[-1,6,-1,'normal'],[0,6,-1,'normal'],[1,6,-1,'normal'],[2,6,-1,'normal'],[3,6,-1,'normal'],[-4,7,-2,'normal'],[-3,7,-2,'normal'],[-2,7,-2,'normal'],[-1,7,-2,'normal'],[0,7,-2,'normal'],[1,7,-2,'normal'],[2,7,-2,'normal'],[3,7,-2,'normal'],[-4,8,-3,'normal'],[-3,8,-3,'normal'],[-2,8,-3,'normal'],[-1,8,-3,'normal'],[0,8,-3,'normal'],[1,8,-3,'normal'],[2,8,-3,'normal'],[3,8,-3,'normal'],[-4,9,-3,'normal'],[-4,10,-3,'normal'],[-4,11,-3,'normal'],[-4,12,-3,'normal'],[-4,13,-3,'normal'],[-4,14,-3,'normal'],[-4,15,-3,'normal'],[-4,16,-3,'normal'],[-3,9,-3,'normal'],[-3,10,-3,'normal'],[-3,11,-3,'normal'],[-3,12,-3,'normal'],[-3,13,-3,'normal'],[-3,14,-3,'normal'],[-3,15,-3,'normal'],[-3,16,-3,'normal'],[-2,9,-3,'normal'],[-2,10,-3,'normal'],[-2,11,-3,'normal'],[-2,12,-3,'normal'],[-2,13,-3,'normal'],[-2,14,-3,'normal'],[-2,15,-3,'normal'],[-2,16,-3,'normal'],[-1,9,-3,'normal'],[-1,10,-3,'normal'],[-1,11,-3,'normal'],[-1,12,-3,'normal'],[-1,13,-3,'normal'],[-1,14,-3,'normal'],[-1,15,-3,'normal'],[-1,16,-3,'normal'],[0,9,-3,'normal'],[0,10,-3,'normal'],[0,11,-3,'normal'],[0,12,-3,'normal'],[0,13,-3,'normal'],[0,14,-3,'normal'],[0,15,-3,'normal'],[0,16,-3,'normal'],[1,9,-3,'normal'],[1,10,-3,'normal'],[1,11,-3,'normal'],[1,12,-3,'normal'],[1,13,-3,'normal'],[1,14,-3,'normal'],[1,15,-3,'normal'],[1,16,-3,'normal'],[2,9,-3,'normal'],[2,10,-3,'normal'],[2,11,-3,'normal'],[2,12,-3,'normal'],[2,13,-3,'normal'],[2,14,-3,'normal'],[2,15,-3,'normal'],[2,16,-3,'normal'],[3,9,-3,'normal'],[3,10,-3,'normal'],[3,11,-3,'normal'],[3,12,-3,'normal'],[3,13,-3,'normal'],[3,14,-3,'normal'],[3,15,-3,'normal'],[3,16,-3,'normal'],[-4,17,-3,'normal'],[-3,17,-3,'normal'],[-2,17,-3,'normal'],[-1,17,-3,'normal'],[0,17,-3,'normal'],[1,17,-3,'normal'],[2,17,-3,'normal'],[3,17,-3,'normal'],[-4,18,-4,'normal'],[-3,18,-4,'normal'],[-2,18,-4,'normal'],[-1,18,-4,'normal'],[0,18,-4,'normal'],[1,18,-4,'normal'],[2,18,-4,'normal'],[3,18,-4,'normal'],[-4,19,-5,'normal'],[-3,19,-5,'normal'],[-2,19,-5,'normal'],[-1,19,-5,'normal'],[0,19,-5,'normal'],[1,19,-5,'normal'],[2,19,-5,'normal'],[3,19,-5,'normal'],[-4,20,-6,'normal'],[-3,20,-6,'normal'],[-2,20,-6,'normal'],[-1,20,-6,'normal'],[0,20,-6,'normal'],[1,20,-6,'normal'],[2,20,-6,'normal'],[3,20,-6,'normal'],[-4,21,-6,'normal'],[-4,22,-6,'normal'],[-4,23,-6,'normal'],[-4,24,-6,'normal'],[-4,25,-6,'normal'],[-4,26,-6,'normal'],[-3,21,-6,'normal'],[-3,22,-6,'normal'],[-3,23,-6,'normal'],[-3,24,-6,'normal'],[-3,25,-6,'normal'],[-3,26,-6,'normal'],[-2,21,-6,'normal'],[-2,22,-6,'normal'],[-2,23,-6,'normal'],[-2,24,-6,'normal'],[-2,25,-6,'normal'],[-2,26,-6,'normal'],[-1,21,-6,'normal'],[-1,22,-6,'normal'],[-1,23,-6,'normal'],[-1,24,-6,'normal'],[-1,25,-6,'normal'],[-1,26,-6,'normal'],[0,21,-6,'normal'],[0,22,-6,'normal'],[0,23,-6,'normal'],[0,24,-6,'normal'],[0,25,-6,'normal'],[0,26,-6,'normal'],[1,21,-6,'normal'],[1,22,-6,'normal'],[1,23,-6,'normal'],[1,24,-6,'normal'],[1,25,-6,'normal'],[1,26,-6,'normal'],[2,21,-6,'normal'],[2,22,-6,'normal'],[2,23,-6,'normal'],[2,24,-6,'normal'],[2,25,-6,'normal'],[2,26,-6,'normal'],[3,21,-6,'normal'],[3,22,-6,'normal'],[3,23,-6,'normal'],[3,24,-6,'normal'],[3,25,-6,'normal'],[3,26,-6,'normal'],[2,27,-6,'normal'],[2,28,-6,'normal'],[2,29,-6,'normal'],[2,30,-6,'normal'],[2,31,-6,'normal'],[2,32,-6,'normal'],[2,33,-6,'normal'],[3,27,-6,'normal'],[3,28,-6,'normal'],[3,29,-6,'normal'],[3,30,-6,'normal'],[3,31,-6,'normal'],[3,32,-6,'normal'],[3,33,-6,'normal'],[-2,34,-6,'normal'],[-1,34,-6,'normal'],[0,34,-6,'normal'],[1,34,-6,'normal'],[2,34,-6,'normal'],[3,34,-6,'normal'],[-3,35,-6,'normal'],[-3,36,-6,'normal'],[-3,37,-6,'normal'],[-3,38,-6,'normal'],[-3,39,-6,'normal'],[-3,40,-6,'normal'],[-3,41,-6,'normal'],[-2,35,-6,'normal'],[-2,36,-6,'normal'],[-2,37,-6,'normal'],[-2,38,-6,'normal'],[-2,39,-6,'normal'],[-2,40,-6,'normal'],[-2,41,-6,'normal'],[-4,42,-6,'normal'],[-4,43,-6,'normal'],[-4,44,-6,'normal'],[-4,45,-6,'normal'],[-4,46,-6,'normal'],[-3,42,-6,'normal'],[-3,43,-6,'normal'],[-3,44,-6,'normal'],[-3,45,-6,'normal'],[-3,46,-6,'normal'],[-2,42,-6,'normal'],[-2,43,-6,'normal'],[-2,44,-6,'normal'],[-2,45,-6,'normal'],[-2,46,-6,'normal'],[-1,42,-6,'normal'],[-1,43,-6,'normal'],[-1,44,-6,'normal'],[-1,45,-6,'normal'],[-1,46,-6,'normal'],[0,42,-6,'normal'],[0,43,-6,'normal'],[0,44,-6,'normal'],[0,45,-6,'normal'],[0,46,-6,'normal'],[1,42,-6,'normal'],[1,43,-6,'normal'],[1,44,-6,'normal'],[1,45,-6,'normal'],[1,46,-6,'normal'],[2,42,-6,'normal'],[2,43,-6,'normal'],[2,44,-6,'normal'],[2,45,-6,'normal'],[2,46,-6,'normal'],[3,42,-6,'normal'],[3,43,-6,'normal'],[3,44,-6,'normal'],[3,45,-6,'normal'],[3,46,-6,'normal'],[-4,47,-6,'normal'],[-3,47,-6,'normal'],[-2,47,-6,'normal'],[-1,47,-6,'normal'],[0,47,-6,'normal'],[1,47,-6,'normal'],[2,47,-6,'normal'],[3,47,-6,'normal'],[-4,48,-7,'normal'],[-3,48,-7,'normal'],[-2,48,-7,'normal'],[-1,48,-7,'normal'],[0,48,-7,'normal'],[1,48,-7,'normal'],[2,48,-7,'normal'],[3,48,-7,'normal'],[-4,49,-8,'normal'],[-3,49,-8,'normal'],[-2,49,-8,'normal'],[-1,49,-8,'normal'],[0,49,-8,'normal'],[1,49,-8,'normal'],[2,49,-8,'normal'],[3,49,-8,'normal'],[-4,50,-9,'normal'],[-3,50,-9,'normal'],[-2,50,-9,'normal'],[-1,50,-9,'normal'],[0,50,-9,'normal'],[1,50,-9,'normal'],[2,50,-9,'normal'],[3,50,-9,'normal'],[-4,51,-9,'goal'],[-4,52,-9,'goal'],[-4,53,-9,'goal'],[-4,54,-9,'goal'],[-4,55,-9,'goal'],[-3,51,-9,'goal'],[-3,52,-9,'goal'],[-3,53,-9,'goal'],[-3,54,-9,'goal'],[-3,55,-9,'goal'],[-2,51,-9,'goal'],[-2,52,-9,'goal'],[-2,53,-9,'goal'],[-2,54,-9,'goal'],[-2,55,-9,'goal'],[-1,51,-9,'goal'],[-1,52,-9,'goal'],[-1,53,-9,'goal'],[-1,54,-9,'goal'],[-1,55,-9,'goal'],[0,51,-9,'goal'],[0,52,-9,'goal'],[0,53,-9,'goal'],[0,54,-9,'goal'],[0,55,-9,'goal'],[1,51,-9,'goal'],[1,52,-9,'goal'],[1,53,-9,'goal'],[1,54,-9,'goal'],[1,55,-9,'goal'],[2,51,-9,'goal'],[2,52,-9,'goal'],[2,53,-9,'goal'],[2,54,-9,'goal'],[2,55,-9,'goal'],[3,51,-9,'goal'],[3,52,-9,'goal'],[3,53,-9,'goal'],[3,54,-9,'goal'],[3,55,-9,'goal']
+],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:52,gz:-9},
 enemies:[
-  {type:'rollerball',gx:0,gy:14,gz:-4,small:true,path:[{gx:-3,gy:14,gz:-4},{gx:3,gy:14,gz:-4}]},
-  {type:'pyramid',gx:0,gy:20,gz:-4,path:[{gx:-3,gy:18,gz:-4},{gx:2,gy:26,gz:-4}]},
-  {type:'bouncer',gx:0,gy:31,gz:-8,path:[{gx:-3,gy:30,gz:-8},{gx:3,gy:34,gz:-8}]},
-  {type:'wheel',gx:1,gy:38,gz:-8,path:[{gx:0,gy:35,gz:-8},{gx:1,gy:41,gz:-8}]},
+  {type:'rollerball',gx:0,gy:12,gz:-3,small:true,path:[{gx:-3,gy:12,gz:-3},{gx:3,gy:12,gz:-3}]},
+  {type:'pyramid',gx:0,gy:20,gz:-6,path:[{gx:-3,gy:18,gz:-6},{gx:2,gy:26,gz:-6}]},
+  {type:'bouncer',gx:2,gy:30,gz:-6,path:[{gx:2,gy:27,gz:-6},{gx:3,gy:34,gz:-6}]},
+  {type:'wheel',gx:0,gy:45,gz:-9,path:[{gx:-3,gy:43,gz:-9},{gx:3,gy:49,gz:-9}]}
 ]};}
 
-// ── L2: THE DESCENT — blue, zigzag with conveyors ───────────────────────────
-// Zigzag: wide east, ramp, narrow south, wide west, ramp, conveyor, goal
-// gz: 0 → -5 → -10 → -15
-function L2(){const T='blue';return{tiles:[
-  ...B(-4,0,0,8,5,T),
-  // Wide east section gz=0
-  ...B(-4,5,0,8,8,T),
-  // Conveyor strip pointing south
-  ...[0,1,2,3].map(i=>[i-2,9,0,'conveyor_s']),
-  // Ramp gz 0→-5
-  ...RY(-4,13,0,6,8,T),
-  // Turn: wide west section gz=-5
-  ...B(-8,19,-5,8,12,T),
-  // Narrow 2-wide bridge heading south gz=-5
-  ...B(-2,31,-5,2,8,T),
-  // Ramp gz -5→-10
-  ...RY(-2,39,-5,6,2,T),
-  // Wide east gz=-10
-  ...B(-2,45,-10,10,10,T),
-  // Conveyors pointing east
-  ...[0,1,2,3,4].map(i=>[i-1,50,-10,'conveyor_e']),
-  // 1-wide strip east gz=-10
-  ...R(8,46,-10,6,T),
-  ...R(8,47,-10,6,T),
-  // Ramp gz -10→-15
-  ...RY(6,48,-10,6,2,T),
-  // Goal gz=-15
-  ...B(2,54,-15,8,5,'goal'),
-],start:{gx:0,gy:2,gz:0},goal:{gx:5,gy:55,gz:-15},
-chutes:[],
+// ── L2: THE DESCENT ─────────────────────────────────────────────────
+function L2(){return{tiles:[
+  [-4,0,0,'blue'],[-4,1,0,'blue'],[-4,2,0,'blue'],[-4,3,0,'blue'],[-4,4,0,'blue'],[-3,0,0,'blue'],[-3,1,0,'blue'],[-3,2,0,'blue'],[-3,3,0,'blue'],[-3,4,0,'blue'],[-2,0,0,'blue'],[-2,1,0,'blue'],[-2,2,0,'blue'],[-2,3,0,'blue'],[-2,4,0,'blue'],[-1,0,0,'blue'],[-1,1,0,'blue'],[-1,2,0,'blue'],[-1,3,0,'blue'],[-1,4,0,'blue'],[0,0,0,'blue'],[0,1,0,'blue'],[0,2,0,'blue'],[0,3,0,'blue'],[0,4,0,'blue'],[1,0,0,'blue'],[1,1,0,'blue'],[1,2,0,'blue'],[1,3,0,'blue'],[1,4,0,'blue'],[2,0,0,'blue'],[2,1,0,'blue'],[2,2,0,'blue'],[2,3,0,'blue'],[2,4,0,'blue'],[3,0,0,'blue'],[3,1,0,'blue'],[3,2,0,'blue'],[3,3,0,'blue'],[3,4,0,'blue'],[-2,4,0,'conveyor_s'],[-1,4,0,'conveyor_s'],[0,4,0,'conveyor_s'],[1,4,0,'conveyor_s'],[2,4,0,'conveyor_s'],[-4,5,0,'blue'],[-4,6,0,'blue'],[-4,7,0,'blue'],[-4,8,0,'blue'],[-4,9,0,'blue'],[-4,10,0,'blue'],[-4,11,0,'blue'],[-4,12,0,'blue'],[-3,5,0,'blue'],[-3,6,0,'blue'],[-3,7,0,'blue'],[-3,8,0,'blue'],[-3,9,0,'blue'],[-3,10,0,'blue'],[-3,11,0,'blue'],[-3,12,0,'blue'],[-2,5,0,'blue'],[-2,6,0,'blue'],[-2,7,0,'blue'],[-2,8,0,'blue'],[-2,9,0,'blue'],[-2,10,0,'blue'],[-2,11,0,'blue'],[-2,12,0,'blue'],[-1,5,0,'blue'],[-1,6,0,'blue'],[-1,7,0,'blue'],[-1,8,0,'blue'],[-1,9,0,'blue'],[-1,10,0,'blue'],[-1,11,0,'blue'],[-1,12,0,'blue'],[0,5,0,'blue'],[0,6,0,'blue'],[0,7,0,'blue'],[0,8,0,'blue'],[0,9,0,'blue'],[0,10,0,'blue'],[0,11,0,'blue'],[0,12,0,'blue'],[1,5,0,'blue'],[1,6,0,'blue'],[1,7,0,'blue'],[1,8,0,'blue'],[1,9,0,'blue'],[1,10,0,'blue'],[1,11,0,'blue'],[1,12,0,'blue'],[2,5,0,'blue'],[2,6,0,'blue'],[2,7,0,'blue'],[2,8,0,'blue'],[2,9,0,'blue'],[2,10,0,'blue'],[2,11,0,'blue'],[2,12,0,'blue'],[3,5,0,'blue'],[3,6,0,'blue'],[3,7,0,'blue'],[3,8,0,'blue'],[3,9,0,'blue'],[3,10,0,'blue'],[3,11,0,'blue'],[3,12,0,'blue'],[-4,13,0,'blue'],[-3,13,0,'blue'],[-2,13,0,'blue'],[-1,13,0,'blue'],[0,13,0,'blue'],[1,13,0,'blue'],[2,13,0,'blue'],[3,13,0,'blue'],[-4,14,-1,'blue'],[-3,14,-1,'blue'],[-2,14,-1,'blue'],[-1,14,-1,'blue'],[0,14,-1,'blue'],[1,14,-1,'blue'],[2,14,-1,'blue'],[3,14,-1,'blue'],[-4,15,-2,'blue'],[-3,15,-2,'blue'],[-2,15,-2,'blue'],[-1,15,-2,'blue'],[0,15,-2,'blue'],[1,15,-2,'blue'],[2,15,-2,'blue'],[3,15,-2,'blue'],[-4,16,-3,'blue'],[-3,16,-3,'blue'],[-2,16,-3,'blue'],[-1,16,-3,'blue'],[0,16,-3,'blue'],[1,16,-3,'blue'],[2,16,-3,'blue'],[3,16,-3,'blue'],[-4,17,-4,'blue'],[-3,17,-4,'blue'],[-2,17,-4,'blue'],[-1,17,-4,'blue'],[0,17,-4,'blue'],[1,17,-4,'blue'],[2,17,-4,'blue'],[3,17,-4,'blue'],[-4,18,-5,'blue'],[-4,19,-5,'blue'],[-4,20,-5,'blue'],[-4,21,-5,'blue'],[-4,22,-5,'blue'],[-4,23,-5,'blue'],[-4,24,-5,'blue'],[-4,25,-5,'blue'],[-3,18,-5,'blue'],[-3,19,-5,'blue'],[-3,20,-5,'blue'],[-3,21,-5,'blue'],[-3,22,-5,'blue'],[-3,23,-5,'blue'],[-3,24,-5,'blue'],[-3,25,-5,'blue'],[-2,18,-5,'blue'],[-2,19,-5,'blue'],[-2,20,-5,'blue'],[-2,21,-5,'blue'],[-2,22,-5,'blue'],[-2,23,-5,'blue'],[-2,24,-5,'blue'],[-2,25,-5,'blue'],[-1,18,-5,'blue'],[-1,19,-5,'blue'],[-1,20,-5,'blue'],[-1,21,-5,'blue'],[-1,22,-5,'blue'],[-1,23,-5,'blue'],[-1,24,-5,'blue'],[-1,25,-5,'blue'],[0,18,-5,'blue'],[0,19,-5,'blue'],[0,20,-5,'blue'],[0,21,-5,'blue'],[0,22,-5,'blue'],[0,23,-5,'blue'],[0,24,-5,'blue'],[0,25,-5,'blue'],[1,18,-5,'blue'],[1,19,-5,'blue'],[1,20,-5,'blue'],[1,21,-5,'blue'],[1,22,-5,'blue'],[1,23,-5,'blue'],[1,24,-5,'blue'],[1,25,-5,'blue'],[2,18,-5,'blue'],[2,19,-5,'blue'],[2,20,-5,'blue'],[2,21,-5,'blue'],[2,22,-5,'blue'],[2,23,-5,'blue'],[2,24,-5,'blue'],[2,25,-5,'blue'],[3,18,-5,'blue'],[3,19,-5,'blue'],[3,20,-5,'blue'],[3,21,-5,'blue'],[3,22,-5,'blue'],[3,23,-5,'blue'],[3,24,-5,'blue'],[3,25,-5,'blue'],[2,26,-5,'blue'],[2,27,-5,'blue'],[2,28,-5,'blue'],[2,29,-5,'blue'],[2,30,-5,'blue'],[2,31,-5,'blue'],[2,32,-5,'blue'],[3,26,-5,'blue'],[3,27,-5,'blue'],[3,28,-5,'blue'],[3,29,-5,'blue'],[3,30,-5,'blue'],[3,31,-5,'blue'],[3,32,-5,'blue'],[-4,33,-5,'blue'],[-3,33,-5,'blue'],[-2,33,-5,'blue'],[-1,33,-5,'blue'],[0,33,-5,'blue'],[1,33,-5,'blue'],[2,33,-5,'blue'],[3,33,-5,'blue'],[-4,34,-5,'blue'],[-4,35,-5,'blue'],[-4,36,-5,'blue'],[-4,37,-5,'blue'],[-4,38,-5,'blue'],[-4,39,-5,'blue'],[-4,40,-5,'blue'],[-3,34,-5,'blue'],[-3,35,-5,'blue'],[-3,36,-5,'blue'],[-3,37,-5,'blue'],[-3,38,-5,'blue'],[-3,39,-5,'blue'],[-3,40,-5,'blue'],[-4,41,-5,'blue'],[-3,41,-5,'blue'],[-2,41,-5,'blue'],[-1,41,-5,'blue'],[0,41,-5,'blue'],[1,41,-5,'blue'],[2,41,-5,'blue'],[3,41,-5,'blue'],[-4,42,-5,'blue'],[-3,42,-5,'blue'],[-2,42,-5,'blue'],[-1,42,-5,'blue'],[0,42,-5,'blue'],[1,42,-5,'blue'],[2,42,-5,'blue'],[3,42,-5,'blue'],[-4,43,-6,'blue'],[-3,43,-6,'blue'],[-2,43,-6,'blue'],[-1,43,-6,'blue'],[0,43,-6,'blue'],[1,43,-6,'blue'],[2,43,-6,'blue'],[3,43,-6,'blue'],[-4,44,-7,'blue'],[-3,44,-7,'blue'],[-2,44,-7,'blue'],[-1,44,-7,'blue'],[0,44,-7,'blue'],[1,44,-7,'blue'],[2,44,-7,'blue'],[3,44,-7,'blue'],[-4,45,-8,'blue'],[-3,45,-8,'blue'],[-2,45,-8,'blue'],[-1,45,-8,'blue'],[0,45,-8,'blue'],[1,45,-8,'blue'],[2,45,-8,'blue'],[3,45,-8,'blue'],[-4,46,-9,'blue'],[-4,47,-9,'blue'],[-4,48,-9,'blue'],[-4,49,-9,'blue'],[-4,50,-9,'blue'],[-4,51,-9,'blue'],[-4,52,-9,'blue'],[-4,53,-9,'blue'],[-3,46,-9,'blue'],[-3,47,-9,'blue'],[-3,48,-9,'blue'],[-3,49,-9,'blue'],[-3,50,-9,'blue'],[-3,51,-9,'blue'],[-3,52,-9,'blue'],[-3,53,-9,'blue'],[-2,46,-9,'blue'],[-2,47,-9,'blue'],[-2,48,-9,'blue'],[-2,49,-9,'blue'],[-2,50,-9,'blue'],[-2,51,-9,'blue'],[-2,52,-9,'blue'],[-2,53,-9,'blue'],[-1,46,-9,'blue'],[-1,47,-9,'blue'],[-1,48,-9,'blue'],[-1,49,-9,'blue'],[-1,50,-9,'blue'],[-1,51,-9,'blue'],[-1,52,-9,'blue'],[-1,53,-9,'blue'],[0,46,-9,'blue'],[0,47,-9,'blue'],[0,48,-9,'blue'],[0,49,-9,'blue'],[0,50,-9,'blue'],[0,51,-9,'blue'],[0,52,-9,'blue'],[0,53,-9,'blue'],[1,46,-9,'blue'],[1,47,-9,'blue'],[1,48,-9,'blue'],[1,49,-9,'blue'],[1,50,-9,'blue'],[1,51,-9,'blue'],[1,52,-9,'blue'],[1,53,-9,'blue'],[2,46,-9,'blue'],[2,47,-9,'blue'],[2,48,-9,'blue'],[2,49,-9,'blue'],[2,50,-9,'blue'],[2,51,-9,'blue'],[2,52,-9,'blue'],[2,53,-9,'blue'],[3,46,-9,'blue'],[3,47,-9,'blue'],[3,48,-9,'blue'],[3,49,-9,'blue'],[3,50,-9,'blue'],[3,51,-9,'blue'],[3,52,-9,'blue'],[3,53,-9,'blue'],[0,54,-9,'blue'],[0,55,-9,'blue'],[0,56,-9,'blue'],[0,57,-9,'blue'],[0,58,-9,'blue'],[0,59,-9,'blue'],[0,60,-9,'blue'],[-4,61,-9,'goal'],[-4,62,-9,'goal'],[-4,63,-9,'goal'],[-4,64,-9,'goal'],[-4,65,-9,'goal'],[-3,61,-9,'goal'],[-3,62,-9,'goal'],[-3,63,-9,'goal'],[-3,64,-9,'goal'],[-3,65,-9,'goal'],[-2,61,-9,'goal'],[-2,62,-9,'goal'],[-2,63,-9,'goal'],[-2,64,-9,'goal'],[-2,65,-9,'goal'],[-1,61,-9,'goal'],[-1,62,-9,'goal'],[-1,63,-9,'goal'],[-1,64,-9,'goal'],[-1,65,-9,'goal'],[0,61,-9,'goal'],[0,62,-9,'goal'],[0,63,-9,'goal'],[0,64,-9,'goal'],[0,65,-9,'goal'],[1,61,-9,'goal'],[1,62,-9,'goal'],[1,63,-9,'goal'],[1,64,-9,'goal'],[1,65,-9,'goal'],[2,61,-9,'goal'],[2,62,-9,'goal'],[2,63,-9,'goal'],[2,64,-9,'goal'],[2,65,-9,'goal'],[3,61,-9,'goal'],[3,62,-9,'goal'],[3,63,-9,'goal'],[3,64,-9,'goal'],[3,65,-9,'goal']
+],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:62,gz:-9},
 enemies:[
   {type:'rollerball',gx:0,gy:8,gz:0,small:true,path:[{gx:-3,gy:8,gz:0},{gx:3,gy:8,gz:0}]},
-  {type:'pyramid',gx:-4,gy:23,gz:-5,path:[{gx:-7,gy:21,gz:-5},{gx:-1,gy:29,gz:-5}]},
-  {type:'skullhead',gx:-1,gy:34,gz:-5,path:[{gx:-2,gy:31,gz:-5},{gx:-1,gy:38,gz:-5}]},
-  {type:'crab',gx:2,gy:48,gz:-10,path:[{gx:-1,gy:46,gz:-10},{gx:7,gy:54,gz:-10}]},
-  {type:'wheel',gx:7,gy:49,gz:-12,path:[{gx:6,gy:48,gz:-12},{gx:13,gy:53,gz:-12}]},
+  {type:'pyramid',gx:0,gy:21,gz:-5,path:[{gx:-3,gy:19,gz:-5},{gx:3,gy:25,gz:-5}]},
+  {type:'skullhead',gx:2,gy:29,gz:-5,path:[{gx:2,gy:26,gz:-5},{gx:3,gy:32,gz:-5}]},
+  {type:'crab',gx:0,gy:50,gz:-9,path:[{gx:-3,gy:48,gz:-9},{gx:3,gy:55,gz:-9}]},
+  {type:'wheel',gx:0,gy:57,gz:-9,path:[{gx:-3,gy:54,gz:-9},{gx:3,gy:60,gz:-9}]}
 ]};}
 
-// ── L3: WAVE MACHINE — red, halfpipes + wave tiles + chute ─────────────────
-// Wide halfpipe → wave section → chute shortcut → narrow → goal
-// gz: 0 → -4 → -8 → chute to -12 → goal
-function L3(){const T='red';return{tiles:[
-  ...B(-4,0,0,8,4,'start'),
-  // Ramp gz 0→-4
-  ...RY(-4,4,0,5,8,T),
-  // Wide platform gz=-4, wave tiles across middle
-  ...B(-4,9,-4,8,10,T),
-  ...[-3,-2,-1,0,1,2].map(i=>[i,14,-4,'wave']),
-  // Halfpipe: ramp into valley gz -4→-7
-  ...VY(-5,19,-4,12,10,3,T),
-  // Platform bottom gz=-7
-  ...B(-4,31,-7,8,8,T),
-  // Chute in — teleports to lower section
-  ...[[0,35,-7,'chute_in']],
-  // Narrow zigzag to the right of chute (if you skip it)
-  ...B(3,32,-7,2,10,T),      // narrow east path
-  ...RY(3,42,-7,5,2,T),      // ramp gz -7→-11
-  ...B(3,47,-11,2,6,T),
-  // Chute out (lower section)
-  ...B(-4,49,-12,8,6,T),
-  ...[[0,49,-12,'chute_out']],
-  // Ramp gz -12→-16
-  ...RY(-4,55,-12,5,8,T),
-  ...B(-4,60,-16,8,6,'goal'),
-],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:61,gz:-16},
-chutes:[{inX:0,inY:35,outX:0,outY:49,outZ:-12}],
+// ── L3: WAVE MACHINE ─────────────────────────────────────────────────
+function L3(){return{tiles:[
+  [-4,0,0,'start'],[-4,1,0,'start'],[-4,2,0,'start'],[-4,3,0,'start'],[-4,4,0,'start'],[-3,0,0,'start'],[-3,1,0,'start'],[-3,2,0,'start'],[-3,3,0,'start'],[-3,4,0,'start'],[-2,0,0,'start'],[-2,1,0,'start'],[-2,2,0,'start'],[-2,3,0,'start'],[-2,4,0,'start'],[-1,0,0,'start'],[-1,1,0,'start'],[-1,2,0,'start'],[-1,3,0,'start'],[-1,4,0,'start'],[0,0,0,'start'],[0,1,0,'start'],[0,2,0,'start'],[0,3,0,'start'],[0,4,0,'start'],[1,0,0,'start'],[1,1,0,'start'],[1,2,0,'start'],[1,3,0,'start'],[1,4,0,'start'],[2,0,0,'start'],[2,1,0,'start'],[2,2,0,'start'],[2,3,0,'start'],[2,4,0,'start'],[3,0,0,'start'],[3,1,0,'start'],[3,2,0,'start'],[3,3,0,'start'],[3,4,0,'start'],[-4,5,0,'red'],[-3,5,0,'red'],[-2,5,0,'red'],[-1,5,0,'red'],[0,5,0,'red'],[1,5,0,'red'],[2,5,0,'red'],[3,5,0,'red'],[-4,6,-1,'red'],[-3,6,-1,'red'],[-2,6,-1,'red'],[-1,6,-1,'red'],[0,6,-1,'red'],[1,6,-1,'red'],[2,6,-1,'red'],[3,6,-1,'red'],[-4,7,-2,'red'],[-3,7,-2,'red'],[-2,7,-2,'red'],[-1,7,-2,'red'],[0,7,-2,'red'],[1,7,-2,'red'],[2,7,-2,'red'],[3,7,-2,'red'],[-4,8,-3,'red'],[-3,8,-3,'red'],[-2,8,-3,'red'],[-1,8,-3,'red'],[0,8,-3,'red'],[1,8,-3,'red'],[2,8,-3,'red'],[3,8,-3,'red'],[-4,9,-4,'red'],[-3,9,-4,'red'],[-2,9,-4,'red'],[-1,9,-4,'red'],[0,9,-4,'red'],[1,9,-4,'red'],[2,9,-4,'red'],[3,9,-4,'red'],[-4,10,-4,'red'],[-4,11,-4,'red'],[-4,12,-4,'red'],[-4,13,-4,'red'],[-4,14,-4,'red'],[-4,15,-4,'red'],[-3,10,-4,'red'],[-3,11,-4,'red'],[-3,12,-4,'red'],[-3,13,-4,'red'],[-3,14,-4,'red'],[-3,15,-4,'red'],[-2,10,-4,'red'],[-2,11,-4,'red'],[-2,12,-4,'red'],[-2,13,-4,'red'],[-2,14,-4,'red'],[-2,15,-4,'red'],[-1,10,-4,'red'],[-1,11,-4,'red'],[-1,12,-4,'red'],[-1,13,-4,'red'],[-1,14,-4,'red'],[-1,15,-4,'red'],[0,10,-4,'red'],[0,11,-4,'red'],[0,12,-4,'red'],[0,13,-4,'red'],[0,14,-4,'red'],[0,15,-4,'red'],[1,10,-4,'red'],[1,11,-4,'red'],[1,12,-4,'red'],[1,13,-4,'red'],[1,14,-4,'red'],[1,15,-4,'red'],[2,10,-4,'red'],[2,11,-4,'red'],[2,12,-4,'red'],[2,13,-4,'red'],[2,14,-4,'red'],[2,15,-4,'red'],[3,10,-4,'red'],[3,11,-4,'red'],[3,12,-4,'red'],[3,13,-4,'red'],[3,14,-4,'red'],[3,15,-4,'red'],[-6,16,-4,'red'],[-5,16,-5,'red'],[-4,16,-6,'red'],[-3,16,-6,'red'],[-2,16,-7,'red'],[-1,16,-7,'red'],[0,16,-7,'red'],[1,16,-7,'red'],[2,16,-6,'red'],[3,16,-6,'red'],[4,16,-5,'red'],[5,16,-4,'red'],[-6,17,-4,'red'],[-5,17,-5,'red'],[-4,17,-6,'red'],[-3,17,-6,'red'],[-2,17,-7,'red'],[-1,17,-7,'red'],[0,17,-7,'red'],[1,17,-7,'red'],[2,17,-6,'red'],[3,17,-6,'red'],[4,17,-5,'red'],[5,17,-4,'red'],[-6,18,-4,'red'],[-5,18,-5,'red'],[-4,18,-6,'red'],[-3,18,-6,'red'],[-2,18,-7,'red'],[-1,18,-7,'red'],[0,18,-7,'red'],[1,18,-7,'red'],[2,18,-6,'red'],[3,18,-6,'red'],[4,18,-5,'red'],[5,18,-4,'red'],[-6,19,-4,'red'],[-5,19,-5,'red'],[-4,19,-6,'red'],[-3,19,-6,'red'],[-2,19,-7,'red'],[-1,19,-7,'red'],[0,19,-7,'red'],[1,19,-7,'red'],[2,19,-6,'red'],[3,19,-6,'red'],[4,19,-5,'red'],[5,19,-4,'red'],[-6,20,-4,'red'],[-5,20,-5,'red'],[-4,20,-6,'red'],[-3,20,-6,'red'],[-2,20,-7,'red'],[-1,20,-7,'red'],[0,20,-7,'red'],[1,20,-7,'red'],[2,20,-6,'red'],[3,20,-6,'red'],[4,20,-5,'red'],[5,20,-4,'red'],[-6,21,-4,'red'],[-5,21,-5,'red'],[-4,21,-6,'red'],[-3,21,-6,'red'],[-2,21,-7,'red'],[-1,21,-7,'red'],[0,21,-7,'red'],[1,21,-7,'red'],[2,21,-6,'red'],[3,21,-6,'red'],[4,21,-5,'red'],[5,21,-4,'red'],[-6,22,-4,'red'],[-5,22,-5,'red'],[-4,22,-6,'red'],[-3,22,-6,'red'],[-2,22,-7,'red'],[-1,22,-7,'red'],[0,22,-7,'red'],[1,22,-7,'red'],[2,22,-6,'red'],[3,22,-6,'red'],[4,22,-5,'red'],[5,22,-4,'red'],[-6,23,-4,'red'],[-5,23,-5,'red'],[-4,23,-6,'red'],[-3,23,-6,'red'],[-2,23,-7,'red'],[-1,23,-7,'red'],[0,23,-7,'red'],[1,23,-7,'red'],[2,23,-6,'red'],[3,23,-6,'red'],[4,23,-5,'red'],[5,23,-4,'red'],[-6,24,-4,'red'],[-5,24,-5,'red'],[-4,24,-6,'red'],[-3,24,-6,'red'],[-2,24,-7,'red'],[-1,24,-7,'red'],[0,24,-7,'red'],[1,24,-7,'red'],[2,24,-6,'red'],[3,24,-6,'red'],[4,24,-5,'red'],[5,24,-4,'red'],[-6,25,-4,'red'],[-5,25,-5,'red'],[-4,25,-6,'red'],[-3,25,-6,'red'],[-2,25,-7,'red'],[-1,25,-7,'red'],[0,25,-7,'red'],[1,25,-7,'red'],[2,25,-6,'red'],[3,25,-6,'red'],[4,25,-5,'red'],[5,25,-4,'red'],[-6,26,-4,'red'],[-5,26,-5,'red'],[-4,26,-6,'red'],[-3,26,-6,'red'],[-2,26,-7,'red'],[-1,26,-7,'red'],[0,26,-7,'red'],[1,26,-7,'red'],[2,26,-6,'red'],[3,26,-6,'red'],[4,26,-5,'red'],[5,26,-4,'red'],[-6,27,-4,'red'],[-5,27,-5,'red'],[-4,27,-6,'red'],[-3,27,-6,'red'],[-2,27,-7,'red'],[-1,27,-7,'red'],[0,27,-7,'red'],[1,27,-7,'red'],[2,27,-6,'red'],[3,27,-6,'red'],[4,27,-5,'red'],[5,27,-4,'red'],[-6,28,-4,'red'],[-5,28,-5,'red'],[-4,28,-6,'red'],[-3,28,-6,'red'],[-2,28,-7,'red'],[-1,28,-7,'red'],[0,28,-7,'red'],[1,28,-7,'red'],[2,28,-6,'red'],[3,28,-6,'red'],[4,28,-5,'red'],[5,28,-4,'red'],[-6,29,-4,'red'],[-5,29,-5,'red'],[-4,29,-6,'red'],[-3,29,-6,'red'],[-2,29,-7,'red'],[-1,29,-7,'red'],[0,29,-7,'red'],[1,29,-7,'red'],[2,29,-6,'red'],[3,29,-6,'red'],[4,29,-5,'red'],[5,29,-4,'red'],[-6,30,-4,'red'],[-5,30,-5,'red'],[-4,30,-6,'red'],[-3,30,-6,'red'],[-2,30,-7,'red'],[-1,30,-7,'red'],[0,30,-7,'red'],[1,30,-7,'red'],[2,30,-6,'red'],[3,30,-6,'red'],[4,30,-5,'red'],[5,30,-4,'red'],[-6,31,-4,'red'],[-5,31,-5,'red'],[-4,31,-6,'red'],[-3,31,-6,'red'],[-2,31,-7,'red'],[-1,31,-7,'red'],[0,31,-7,'red'],[1,31,-7,'red'],[2,31,-6,'red'],[3,31,-6,'red'],[4,31,-5,'red'],[5,31,-4,'red'],[-4,32,-7,'red'],[-4,33,-7,'red'],[-4,34,-7,'red'],[-4,35,-7,'red'],[-4,36,-7,'red'],[-4,37,-7,'red'],[-3,32,-7,'red'],[-3,33,-7,'red'],[-3,34,-7,'red'],[-3,35,-7,'red'],[-3,36,-7,'red'],[-3,37,-7,'red'],[-2,32,-7,'red'],[-2,33,-7,'red'],[-2,34,-7,'red'],[-2,35,-7,'red'],[-2,36,-7,'red'],[-2,37,-7,'red'],[-1,32,-7,'red'],[-1,33,-7,'red'],[-1,34,-7,'red'],[-1,35,-7,'red'],[-1,36,-7,'red'],[-1,37,-7,'red'],[0,32,-7,'red'],[0,33,-7,'red'],[0,34,-7,'red'],[0,35,-7,'red'],[0,36,-7,'red'],[0,37,-7,'red'],[1,32,-7,'red'],[1,33,-7,'red'],[1,34,-7,'red'],[1,35,-7,'red'],[1,36,-7,'red'],[1,37,-7,'red'],[2,32,-7,'red'],[2,33,-7,'red'],[2,34,-7,'red'],[2,35,-7,'red'],[2,36,-7,'red'],[2,37,-7,'red'],[3,32,-7,'red'],[3,33,-7,'red'],[3,34,-7,'red'],[3,35,-7,'red'],[3,36,-7,'red'],[3,37,-7,'red'],[-2,34,-7,'wave'],[-1,34,-7,'wave'],[0,34,-7,'wave'],[1,34,-7,'wave'],[-4,38,-7,'red'],[-3,38,-7,'red'],[-2,38,-7,'red'],[-1,38,-7,'red'],[0,38,-7,'red'],[1,38,-7,'red'],[2,38,-7,'red'],[3,38,-7,'red'],[-4,39,-8,'red'],[-3,39,-8,'red'],[-2,39,-8,'red'],[-1,39,-8,'red'],[0,39,-8,'red'],[1,39,-8,'red'],[2,39,-8,'red'],[3,39,-8,'red'],[-4,40,-9,'red'],[-3,40,-9,'red'],[-2,40,-9,'red'],[-1,40,-9,'red'],[0,40,-9,'red'],[1,40,-9,'red'],[2,40,-9,'red'],[3,40,-9,'red'],[-4,41,-10,'red'],[-3,41,-10,'red'],[-2,41,-10,'red'],[-1,41,-10,'red'],[0,41,-10,'red'],[1,41,-10,'red'],[2,41,-10,'red'],[3,41,-10,'red'],[0,42,-11,'red'],[0,43,-11,'red'],[0,44,-11,'red'],[0,45,-11,'red'],[0,46,-11,'red'],[0,47,-11,'red'],[0,48,-11,'red'],[0,49,-11,'red'],[-4,50,-11,'red'],[-3,50,-11,'red'],[-2,50,-11,'red'],[-1,50,-11,'red'],[0,50,-11,'red'],[-4,51,-11,'red'],[-4,52,-11,'red'],[-4,53,-11,'red'],[-4,54,-11,'red'],[-4,55,-11,'red'],[-4,56,-11,'red'],[-4,57,-11,'red'],[-4,58,-11,'red'],[-4,59,-11,'red'],[-4,60,-11,'red'],[-4,61,-11,'red'],[-4,62,-11,'red'],[-3,58,-11,'red'],[-3,59,-11,'red'],[-3,60,-11,'red'],[-3,61,-11,'red'],[-3,62,-11,'red'],[-2,58,-11,'red'],[-2,59,-11,'red'],[-2,60,-11,'red'],[-2,61,-11,'red'],[-2,62,-11,'red'],[-1,58,-11,'red'],[-1,59,-11,'red'],[-1,60,-11,'red'],[-1,61,-11,'red'],[-1,62,-11,'red'],[0,58,-11,'red'],[0,59,-11,'red'],[0,60,-11,'red'],[0,61,-11,'red'],[0,62,-11,'red'],[1,58,-11,'red'],[1,59,-11,'red'],[1,60,-11,'red'],[1,61,-11,'red'],[1,62,-11,'red'],[2,58,-11,'red'],[2,59,-11,'red'],[2,60,-11,'red'],[2,61,-11,'red'],[2,62,-11,'red'],[3,58,-11,'red'],[3,59,-11,'red'],[3,60,-11,'red'],[3,61,-11,'red'],[3,62,-11,'red'],[-4,63,-11,'red'],[-3,63,-11,'red'],[-2,63,-11,'red'],[-1,63,-11,'red'],[0,63,-11,'red'],[1,63,-11,'red'],[2,63,-11,'red'],[3,63,-11,'red'],[-4,64,-12,'red'],[-3,64,-12,'red'],[-2,64,-12,'red'],[-1,64,-12,'red'],[0,64,-12,'red'],[1,64,-12,'red'],[2,64,-12,'red'],[3,64,-12,'red'],[-4,65,-13,'red'],[-3,65,-13,'red'],[-2,65,-13,'red'],[-1,65,-13,'red'],[0,65,-13,'red'],[1,65,-13,'red'],[2,65,-13,'red'],[3,65,-13,'red'],[-4,66,-14,'red'],[-3,66,-14,'red'],[-2,66,-14,'red'],[-1,66,-14,'red'],[0,66,-14,'red'],[1,66,-14,'red'],[2,66,-14,'red'],[3,66,-14,'red'],[-4,67,-14,'goal'],[-4,68,-14,'goal'],[-4,69,-14,'goal'],[-4,70,-14,'goal'],[-4,71,-14,'goal'],[-3,67,-14,'goal'],[-3,68,-14,'goal'],[-3,69,-14,'goal'],[-3,70,-14,'goal'],[-3,71,-14,'goal'],[-2,67,-14,'goal'],[-2,68,-14,'goal'],[-2,69,-14,'goal'],[-2,70,-14,'goal'],[-2,71,-14,'goal'],[-1,67,-14,'goal'],[-1,68,-14,'goal'],[-1,69,-14,'goal'],[-1,70,-14,'goal'],[-1,71,-14,'goal'],[0,67,-14,'goal'],[0,68,-14,'goal'],[0,69,-14,'goal'],[0,70,-14,'goal'],[0,71,-14,'goal'],[1,67,-14,'goal'],[1,68,-14,'goal'],[1,69,-14,'goal'],[1,70,-14,'goal'],[1,71,-14,'goal'],[2,67,-14,'goal'],[2,68,-14,'goal'],[2,69,-14,'goal'],[2,70,-14,'goal'],[2,71,-14,'goal'],[3,67,-14,'goal'],[3,68,-14,'goal'],[3,69,-14,'goal'],[3,70,-14,'goal'],[3,71,-14,'goal']
+],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:68,gz:-14},
 enemies:[
-  {type:'iceball',gx:0,gy:11,gz:-4,small:true,path:[{gx:-3,gy:11,gz:-4},{gx:3,gy:11,gz:-4}]},
-  {type:'pyramid',gx:-1,gy:22,gz:-6,path:[{gx:-4,gy:20,gz:-6},{gx:3,gy:30,gz:-6}]},
-  {type:'wheel',gx:0,gy:34,gz:-7,path:[{gx:-3,gy:32,gz:-7},{gx:2,gy:38,gz:-7}]},
-  {type:'crab',gx:0,gy:52,gz:-12,path:[{gx:-3,gy:50,gz:-12},{gx:4,gy:54,gz:-12}]},
-  {type:'skullhead',gx:0,gy:57,gz:-14,path:[{gx:-3,gy:55,gz:-13},{gx:3,gy:59,gz:-15}]},
+  {type:'iceball',gx:0,gy:12,gz:-4,small:true,path:[{gx:-3,gy:12,gz:-3},{gx:3,gy:12,gz:-3}]},
+  {type:'pyramid',gx:-1,gy:22,gz:-6,path:[{gx:-5,gy:17,gz:-6},{gx:4,gy:31,gz:-6}]},
+  {type:'crab',gx:0,gy:36,gz:-7,path:[{gx:-3,gy:34,gz:-7},{gx:3,gy:40,gz:-7}]},
+  {type:'wheel',gx:0,gy:45,gz:-11,path:[{gx:0,gy:42,gz:-11},{gx:0,gy:49,gz:-11}]},
+  {type:'skullhead',gx:-3,gy:52,gz:-11,path:[{gx:-4,gy:51,gz:-11},{gx:-4,gy:57,gz:-11}]}
 ]};}
 
-// ── L4: VALLEY RUN — dark, long halfpipes + zigzag narrows ──────────────────
-// Two big halfpipe valleys separated by narrow zigzag. Bruiser appears.
-// gz: 0 → -5 → -10 → -15 → -20
-function L4(){const T='dark';return{tiles:[
-  ...B(-4,0,0,8,4,T),
-  ...RY(-4,4,0,6,8,T),           // gz 0→-5
-  // Halfpipe valley gz=-5, depth=4, center gz=-9
-  ...VY(-6,10,-5,20,12,4,T),
-  // Platform gz=-9
-  ...B(-4,30,-9,8,8,T),
-  // Narrow zigzag: 1-wide south, jog, 1-wide south
-  ...C(0,38,-9,8,T),             // 1-wide south
-  ...R(-2,46,-9,5,T),            // jog west 1-wide
-  ...C(-2,47,-9,7,T),            // 1-wide south again
-  // Ramp gz -9→-14
-  ...RY(-4,54,-9,6,8,T),
-  // Second halfpipe gz=-14, depth=4, center gz=-18
-  ...VY(-6,60,-14,20,12,4,T),
-  // Platform gz=-18
-  ...B(-4,80,-18,8,8,T),
-  // Ramp gz -18→-22
-  ...RY(-4,88,-18,5,8,T),
-  // Goal gz=-22
-  ...B(-4,93,-22,8,5,'goal'),
-],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:94,gz:-22},
+// ── L4: VALLEY RUN ─────────────────────────────────────────────────
+function L4(){return{tiles:[
+  [-4,0,0,'dark'],[-4,1,0,'dark'],[-4,2,0,'dark'],[-4,3,0,'dark'],[-4,4,0,'dark'],[-3,0,0,'dark'],[-3,1,0,'dark'],[-3,2,0,'dark'],[-3,3,0,'dark'],[-3,4,0,'dark'],[-2,0,0,'dark'],[-2,1,0,'dark'],[-2,2,0,'dark'],[-2,3,0,'dark'],[-2,4,0,'dark'],[-1,0,0,'dark'],[-1,1,0,'dark'],[-1,2,0,'dark'],[-1,3,0,'dark'],[-1,4,0,'dark'],[0,0,0,'dark'],[0,1,0,'dark'],[0,2,0,'dark'],[0,3,0,'dark'],[0,4,0,'dark'],[1,0,0,'dark'],[1,1,0,'dark'],[1,2,0,'dark'],[1,3,0,'dark'],[1,4,0,'dark'],[2,0,0,'dark'],[2,1,0,'dark'],[2,2,0,'dark'],[2,3,0,'dark'],[2,4,0,'dark'],[3,0,0,'dark'],[3,1,0,'dark'],[3,2,0,'dark'],[3,3,0,'dark'],[3,4,0,'dark'],[-4,5,0,'dark'],[-3,5,0,'dark'],[-2,5,0,'dark'],[-1,5,0,'dark'],[0,5,0,'dark'],[1,5,0,'dark'],[2,5,0,'dark'],[3,5,0,'dark'],[-4,6,-1,'dark'],[-3,6,-1,'dark'],[-2,6,-1,'dark'],[-1,6,-1,'dark'],[0,6,-1,'dark'],[1,6,-1,'dark'],[2,6,-1,'dark'],[3,6,-1,'dark'],[-4,7,-2,'dark'],[-3,7,-2,'dark'],[-2,7,-2,'dark'],[-1,7,-2,'dark'],[0,7,-2,'dark'],[1,7,-2,'dark'],[2,7,-2,'dark'],[3,7,-2,'dark'],[-4,8,-3,'dark'],[-3,8,-3,'dark'],[-2,8,-3,'dark'],[-1,8,-3,'dark'],[0,8,-3,'dark'],[1,8,-3,'dark'],[2,8,-3,'dark'],[3,8,-3,'dark'],[-4,9,-4,'dark'],[-3,9,-4,'dark'],[-2,9,-4,'dark'],[-1,9,-4,'dark'],[0,9,-4,'dark'],[1,9,-4,'dark'],[2,9,-4,'dark'],[3,9,-4,'dark'],[-4,10,-5,'dark'],[-3,10,-5,'dark'],[-2,10,-5,'dark'],[-1,10,-5,'dark'],[0,10,-5,'dark'],[1,10,-5,'dark'],[2,10,-5,'dark'],[3,10,-5,'dark'],[-4,11,-6,'dark'],[-3,11,-6,'dark'],[-2,11,-6,'dark'],[-1,11,-6,'dark'],[0,11,-6,'dark'],[1,11,-6,'dark'],[2,11,-6,'dark'],[3,11,-6,'dark'],[-4,12,-6,'dark'],[-4,13,-6,'dark'],[-4,14,-6,'dark'],[-4,15,-6,'dark'],[-4,16,-6,'dark'],[-4,17,-6,'dark'],[-3,12,-6,'dark'],[-3,13,-6,'dark'],[-3,14,-6,'dark'],[-3,15,-6,'dark'],[-3,16,-6,'dark'],[-3,17,-6,'dark'],[-2,12,-6,'dark'],[-2,13,-6,'dark'],[-2,14,-6,'dark'],[-2,15,-6,'dark'],[-2,16,-6,'dark'],[-2,17,-6,'dark'],[-1,12,-6,'dark'],[-1,13,-6,'dark'],[-1,14,-6,'dark'],[-1,15,-6,'dark'],[-1,16,-6,'dark'],[-1,17,-6,'dark'],[0,12,-6,'dark'],[0,13,-6,'dark'],[0,14,-6,'dark'],[0,15,-6,'dark'],[0,16,-6,'dark'],[0,17,-6,'dark'],[1,12,-6,'dark'],[1,13,-6,'dark'],[1,14,-6,'dark'],[1,15,-6,'dark'],[1,16,-6,'dark'],[1,17,-6,'dark'],[2,12,-6,'dark'],[2,13,-6,'dark'],[2,14,-6,'dark'],[2,15,-6,'dark'],[2,16,-6,'dark'],[2,17,-6,'dark'],[3,12,-6,'dark'],[3,13,-6,'dark'],[3,14,-6,'dark'],[3,15,-6,'dark'],[3,16,-6,'dark'],[3,17,-6,'dark'],[2,18,-6,'dark'],[2,19,-6,'dark'],[2,20,-6,'dark'],[2,21,-6,'dark'],[2,22,-6,'dark'],[2,23,-6,'dark'],[2,24,-6,'dark'],[2,25,-6,'dark'],[2,26,-6,'dark'],[3,18,-6,'dark'],[3,19,-6,'dark'],[3,20,-6,'dark'],[3,21,-6,'dark'],[3,22,-6,'dark'],[3,23,-6,'dark'],[3,24,-6,'dark'],[3,25,-6,'dark'],[3,26,-6,'dark'],[-4,27,-6,'dark'],[-3,27,-6,'dark'],[-2,27,-6,'dark'],[-1,27,-6,'dark'],[0,27,-6,'dark'],[1,27,-6,'dark'],[2,27,-6,'dark'],[-4,28,-6,'dark'],[-4,29,-6,'dark'],[-4,30,-6,'dark'],[-4,31,-6,'dark'],[-4,32,-6,'dark'],[-4,33,-6,'dark'],[-4,34,-6,'dark'],[-4,35,-6,'dark'],[-4,36,-6,'dark'],[-3,28,-6,'dark'],[-3,29,-6,'dark'],[-3,30,-6,'dark'],[-3,31,-6,'dark'],[-3,32,-6,'dark'],[-3,33,-6,'dark'],[-3,34,-6,'dark'],[-3,35,-6,'dark'],[-3,36,-6,'dark'],[-4,37,-6,'dark'],[-3,37,-6,'dark'],[-2,37,-6,'dark'],[-1,37,-6,'dark'],[0,37,-6,'dark'],[1,37,-6,'dark'],[2,37,-6,'dark'],[3,37,-6,'dark'],[-6,38,-6,'dark'],[-5,38,-7,'dark'],[-4,38,-8,'dark'],[-3,38,-8,'dark'],[-2,38,-9,'dark'],[-1,38,-9,'dark'],[0,38,-9,'dark'],[1,38,-9,'dark'],[2,38,-8,'dark'],[3,38,-8,'dark'],[4,38,-7,'dark'],[5,38,-6,'dark'],[-6,39,-6,'dark'],[-5,39,-7,'dark'],[-4,39,-8,'dark'],[-3,39,-8,'dark'],[-2,39,-9,'dark'],[-1,39,-9,'dark'],[0,39,-9,'dark'],[1,39,-9,'dark'],[2,39,-8,'dark'],[3,39,-8,'dark'],[4,39,-7,'dark'],[5,39,-6,'dark'],[-6,40,-6,'dark'],[-5,40,-7,'dark'],[-4,40,-8,'dark'],[-3,40,-8,'dark'],[-2,40,-9,'dark'],[-1,40,-9,'dark'],[0,40,-9,'dark'],[1,40,-9,'dark'],[2,40,-8,'dark'],[3,40,-8,'dark'],[4,40,-7,'dark'],[5,40,-6,'dark'],[-6,41,-6,'dark'],[-5,41,-7,'dark'],[-4,41,-8,'dark'],[-3,41,-8,'dark'],[-2,41,-9,'dark'],[-1,41,-9,'dark'],[0,41,-9,'dark'],[1,41,-9,'dark'],[2,41,-8,'dark'],[3,41,-8,'dark'],[4,41,-7,'dark'],[5,41,-6,'dark'],[-6,42,-6,'dark'],[-5,42,-7,'dark'],[-4,42,-8,'dark'],[-3,42,-8,'dark'],[-2,42,-9,'dark'],[-1,42,-9,'dark'],[0,42,-9,'dark'],[1,42,-9,'dark'],[2,42,-8,'dark'],[3,42,-8,'dark'],[4,42,-7,'dark'],[5,42,-6,'dark'],[-6,43,-6,'dark'],[-5,43,-7,'dark'],[-4,43,-8,'dark'],[-3,43,-8,'dark'],[-2,43,-9,'dark'],[-1,43,-9,'dark'],[0,43,-9,'dark'],[1,43,-9,'dark'],[2,43,-8,'dark'],[3,43,-8,'dark'],[4,43,-7,'dark'],[5,43,-6,'dark'],[-6,44,-6,'dark'],[-5,44,-7,'dark'],[-4,44,-8,'dark'],[-3,44,-8,'dark'],[-2,44,-9,'dark'],[-1,44,-9,'dark'],[0,44,-9,'dark'],[1,44,-9,'dark'],[2,44,-8,'dark'],[3,44,-8,'dark'],[4,44,-7,'dark'],[5,44,-6,'dark'],[-6,45,-6,'dark'],[-5,45,-7,'dark'],[-4,45,-8,'dark'],[-3,45,-8,'dark'],[-2,45,-9,'dark'],[-1,45,-9,'dark'],[0,45,-9,'dark'],[1,45,-9,'dark'],[2,45,-8,'dark'],[3,45,-8,'dark'],[4,45,-7,'dark'],[5,45,-6,'dark'],[-6,46,-6,'dark'],[-5,46,-7,'dark'],[-4,46,-8,'dark'],[-3,46,-8,'dark'],[-2,46,-9,'dark'],[-1,46,-9,'dark'],[0,46,-9,'dark'],[1,46,-9,'dark'],[2,46,-8,'dark'],[3,46,-8,'dark'],[4,46,-7,'dark'],[5,46,-6,'dark'],[-6,47,-6,'dark'],[-5,47,-7,'dark'],[-4,47,-8,'dark'],[-3,47,-8,'dark'],[-2,47,-9,'dark'],[-1,47,-9,'dark'],[0,47,-9,'dark'],[1,47,-9,'dark'],[2,47,-8,'dark'],[3,47,-8,'dark'],[4,47,-7,'dark'],[5,47,-6,'dark'],[-6,48,-6,'dark'],[-5,48,-7,'dark'],[-4,48,-8,'dark'],[-3,48,-8,'dark'],[-2,48,-9,'dark'],[-1,48,-9,'dark'],[0,48,-9,'dark'],[1,48,-9,'dark'],[2,48,-8,'dark'],[3,48,-8,'dark'],[4,48,-7,'dark'],[5,48,-6,'dark'],[-6,49,-6,'dark'],[-5,49,-7,'dark'],[-4,49,-8,'dark'],[-3,49,-8,'dark'],[-2,49,-9,'dark'],[-1,49,-9,'dark'],[0,49,-9,'dark'],[1,49,-9,'dark'],[2,49,-8,'dark'],[3,49,-8,'dark'],[4,49,-7,'dark'],[5,49,-6,'dark'],[-6,50,-6,'dark'],[-5,50,-7,'dark'],[-4,50,-8,'dark'],[-3,50,-8,'dark'],[-2,50,-9,'dark'],[-1,50,-9,'dark'],[0,50,-9,'dark'],[1,50,-9,'dark'],[2,50,-8,'dark'],[3,50,-8,'dark'],[4,50,-7,'dark'],[5,50,-6,'dark'],[-6,51,-6,'dark'],[-5,51,-7,'dark'],[-4,51,-8,'dark'],[-3,51,-8,'dark'],[-2,51,-9,'dark'],[-1,51,-9,'dark'],[0,51,-9,'dark'],[1,51,-9,'dark'],[2,51,-8,'dark'],[3,51,-8,'dark'],[4,51,-7,'dark'],[5,51,-6,'dark'],[-4,52,-9,'dark'],[-4,53,-9,'dark'],[-4,54,-9,'dark'],[-4,55,-9,'dark'],[-4,56,-9,'dark'],[-4,57,-9,'dark'],[-3,52,-9,'dark'],[-3,53,-9,'dark'],[-3,54,-9,'dark'],[-3,55,-9,'dark'],[-3,56,-9,'dark'],[-3,57,-9,'dark'],[-2,52,-9,'dark'],[-2,53,-9,'dark'],[-2,54,-9,'dark'],[-2,55,-9,'dark'],[-2,56,-9,'dark'],[-2,57,-9,'dark'],[-1,52,-9,'dark'],[-1,53,-9,'dark'],[-1,54,-9,'dark'],[-1,55,-9,'dark'],[-1,56,-9,'dark'],[-1,57,-9,'dark'],[0,52,-9,'dark'],[0,53,-9,'dark'],[0,54,-9,'dark'],[0,55,-9,'dark'],[0,56,-9,'dark'],[0,57,-9,'dark'],[1,52,-9,'dark'],[1,53,-9,'dark'],[1,54,-9,'dark'],[1,55,-9,'dark'],[1,56,-9,'dark'],[1,57,-9,'dark'],[2,52,-9,'dark'],[2,53,-9,'dark'],[2,54,-9,'dark'],[2,55,-9,'dark'],[2,56,-9,'dark'],[2,57,-9,'dark'],[3,52,-9,'dark'],[3,53,-9,'dark'],[3,54,-9,'dark'],[3,55,-9,'dark'],[3,56,-9,'dark'],[3,57,-9,'dark'],[-4,58,-9,'dark'],[-3,58,-9,'dark'],[-2,58,-9,'dark'],[-1,58,-9,'dark'],[0,58,-9,'dark'],[1,58,-9,'dark'],[2,58,-9,'dark'],[3,58,-9,'dark'],[-4,59,-10,'dark'],[-3,59,-10,'dark'],[-2,59,-10,'dark'],[-1,59,-10,'dark'],[0,59,-10,'dark'],[1,59,-10,'dark'],[2,59,-10,'dark'],[3,59,-10,'dark'],[-4,60,-11,'dark'],[-3,60,-11,'dark'],[-2,60,-11,'dark'],[-1,60,-11,'dark'],[0,60,-11,'dark'],[1,60,-11,'dark'],[2,60,-11,'dark'],[3,60,-11,'dark'],[-4,61,-12,'dark'],[-3,61,-12,'dark'],[-2,61,-12,'dark'],[-1,61,-12,'dark'],[0,61,-12,'dark'],[1,61,-12,'dark'],[2,61,-12,'dark'],[3,61,-12,'dark'],[-4,62,-13,'dark'],[-3,62,-13,'dark'],[-2,62,-13,'dark'],[-1,62,-13,'dark'],[0,62,-13,'dark'],[1,62,-13,'dark'],[2,62,-13,'dark'],[3,62,-13,'dark'],[-4,63,-14,'dark'],[-4,64,-14,'dark'],[-4,65,-14,'dark'],[-4,66,-14,'dark'],[-4,67,-14,'dark'],[-4,68,-14,'dark'],[-3,63,-14,'dark'],[-3,64,-14,'dark'],[-3,65,-14,'dark'],[-3,66,-14,'dark'],[-3,67,-14,'dark'],[-3,68,-14,'dark'],[-2,63,-14,'dark'],[-2,64,-14,'dark'],[-2,65,-14,'dark'],[-2,66,-14,'dark'],[-2,67,-14,'dark'],[-2,68,-14,'dark'],[-1,63,-14,'dark'],[-1,64,-14,'dark'],[-1,65,-14,'dark'],[-1,66,-14,'dark'],[-1,67,-14,'dark'],[-1,68,-14,'dark'],[0,63,-14,'dark'],[0,64,-14,'dark'],[0,65,-14,'dark'],[0,66,-14,'dark'],[0,67,-14,'dark'],[0,68,-14,'dark'],[1,63,-14,'dark'],[1,64,-14,'dark'],[1,65,-14,'dark'],[1,66,-14,'dark'],[1,67,-14,'dark'],[1,68,-14,'dark'],[2,63,-14,'dark'],[2,64,-14,'dark'],[2,65,-14,'dark'],[2,66,-14,'dark'],[2,67,-14,'dark'],[2,68,-14,'dark'],[3,63,-14,'dark'],[3,64,-14,'dark'],[3,65,-14,'dark'],[3,66,-14,'dark'],[3,67,-14,'dark'],[3,68,-14,'dark'],[-1,69,-14,'dark'],[-1,70,-14,'dark'],[-1,71,-14,'dark'],[-1,72,-14,'dark'],[-1,73,-14,'dark'],[-1,74,-14,'dark'],[-1,75,-14,'dark'],[0,69,-14,'dark'],[0,70,-14,'dark'],[0,71,-14,'dark'],[0,72,-14,'dark'],[0,73,-14,'dark'],[0,74,-14,'dark'],[0,75,-14,'dark'],[-4,76,-14,'goal'],[-4,77,-14,'goal'],[-4,78,-14,'goal'],[-4,79,-14,'goal'],[-4,80,-14,'goal'],[-3,76,-14,'goal'],[-3,77,-14,'goal'],[-3,78,-14,'goal'],[-3,79,-14,'goal'],[-3,80,-14,'goal'],[-2,76,-14,'goal'],[-2,77,-14,'goal'],[-2,78,-14,'goal'],[-2,79,-14,'goal'],[-2,80,-14,'goal'],[-1,76,-14,'goal'],[-1,77,-14,'goal'],[-1,78,-14,'goal'],[-1,79,-14,'goal'],[-1,80,-14,'goal'],[0,76,-14,'goal'],[0,77,-14,'goal'],[0,78,-14,'goal'],[0,79,-14,'goal'],[0,80,-14,'goal'],[1,76,-14,'goal'],[1,77,-14,'goal'],[1,78,-14,'goal'],[1,79,-14,'goal'],[1,80,-14,'goal'],[2,76,-14,'goal'],[2,77,-14,'goal'],[2,78,-14,'goal'],[2,79,-14,'goal'],[2,80,-14,'goal'],[3,76,-14,'goal'],[3,77,-14,'goal'],[3,78,-14,'goal'],[3,79,-14,'goal'],[3,80,-14,'goal']
+],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:77,gz:-14},
+chutes:[],
 enemies:[
-  {type:'rollerball',gx:0,gy:7,gz:-2,small:true,path:[{gx:-3,gy:6,gz:-2},{gx:3,gy:6,gz:-2}]},
-  {type:'pyramid',gx:0,gy:18,gz:-8,path:[{gx:-5,gy:11,gz:-8},{gx:4,gy:29,gz:-8}]},
-  {type:'bruiser',gx:0,gy:32,gz:-9,path:[{gx:-3,gy:31,gz:-9},{gx:3,gy:37,gz:-9}]},
-  {type:'ghost',gx:0,gy:39,gz:-9,path:[{gx:-2,gy:38,gz:-9},{gx:-2,gy:45,gz:-9}]},
-  {type:'bruiser',gx:0,gy:70,gz:-17,path:[{gx:-5,gy:61,gz:-17},{gx:4,gy:79,gz:-17}]},
-  {type:'skullhead',gx:0,gy:83,gz:-18,path:[{gx:-3,gy:81,gz:-18},{gx:3,gy:87,gz:-18}]},
+  {type:'bruiser',gx:2,gy:20,gz:-6,path:[{gx:2,gy:18,gz:-6},{gx:3,gy:26,gz:-6}]},
+  {type:'ghost',gx:-3,gy:30,gz:-6,path:[{gx:-4,gy:28,gz:-6},{gx:-3,gy:36,gz:-6}]},
+  {type:'pyramid',gx:0,gy:42,gz:-9,path:[{gx:-5,gy:39,gz:-9},{gx:4,gy:51,gz:-9}]},
+  {type:'bruiser',gx:-1,gy:60,gz:-14,path:[{gx:-1,gy:63,gz:-14},{gx:0,gy:68,gz:-14}]}
 ]};}
 
-// ── L5: GOLDEN PEAKS — gold, terraces + ramps + conveyors + narrow ──────────
-// Terrace drops with conveyors, narrow exposed bridges, chute shortcut
-// gz: 0 → -6 → -12 → -18 → -24
-function L5(){const T='gold';return{tiles:[
-  ...B(-4,0,0,8,4,T),
-  // Ramp gz 0→-6 (7 wide)
-  ...RY(-3,4,0,7,7,T),
-  // Terrace 1 gz=-6, 8×10
-  ...B(-3,11,-6,7,10,T),
-  // Conveyor row pointing south
-  ...[-2,-1,0,1,2].map(i=>[i,17,-6,'conveyor_s']),
-  // Ramp gz -6→-12 (6 wide) heading EAST side
-  ...RY(1,21,-6,7,5,T),
-  // Terrace 2 gz=-12, but offset east — forces zigzag
-  ...B(1,28,-12,8,8,T),
-  // Narrow 2-wide west bridge gz=-12
-  ...B(-3,29,-12,5,2,T),
-  // Ramp gz -12→-18 on west side
-  ...RY(-3,31,-12,7,4,T),
-  // Terrace 3 gz=-18 west side
-  ...B(-5,38,-18,8,10,T),
-  // Wave tiles in middle
-  ...[-4,-3,-2,-1,0].map(i=>[i,43,-18,'wave']),
-  // 1-wide bridge east gz=-18
-  ...R(3,42,-18,5,T),
-  ...R(3,43,-18,5,T),
-  // Ramp gz -18→-24
-  ...RY(3,47,-18,7,4,T),
-  // Goal gz=-24
-  ...B(1,54,-24,8,5,'goal'),
-],start:{gx:0,gy:2,gz:0},goal:{gx:3,gy:55,gz:-24},
+// ── L5: GOLDEN PEAKS ─────────────────────────────────────────────────
+function L5(){return{tiles:[
+  [-4,0,0,'gold'],[-4,1,0,'gold'],[-4,2,0,'gold'],[-4,3,0,'gold'],[-4,4,0,'gold'],[-3,0,0,'gold'],[-3,1,0,'gold'],[-3,2,0,'gold'],[-3,3,0,'gold'],[-3,4,0,'gold'],[-2,0,0,'gold'],[-2,1,0,'gold'],[-2,2,0,'gold'],[-2,3,0,'gold'],[-2,4,0,'gold'],[-1,0,0,'gold'],[-1,1,0,'gold'],[-1,2,0,'gold'],[-1,3,0,'gold'],[-1,4,0,'gold'],[0,0,0,'gold'],[0,1,0,'gold'],[0,2,0,'gold'],[0,3,0,'gold'],[0,4,0,'gold'],[1,0,0,'gold'],[1,1,0,'gold'],[1,2,0,'gold'],[1,3,0,'gold'],[1,4,0,'gold'],[2,0,0,'gold'],[2,1,0,'gold'],[2,2,0,'gold'],[2,3,0,'gold'],[2,4,0,'gold'],[3,0,0,'gold'],[3,1,0,'gold'],[3,2,0,'gold'],[3,3,0,'gold'],[3,4,0,'gold'],[-4,5,0,'gold'],[-3,5,0,'gold'],[-2,5,0,'gold'],[-1,5,0,'gold'],[0,5,0,'gold'],[1,5,0,'gold'],[2,5,0,'gold'],[3,5,0,'gold'],[-4,6,-1,'gold'],[-3,6,-1,'gold'],[-2,6,-1,'gold'],[-1,6,-1,'gold'],[0,6,-1,'gold'],[1,6,-1,'gold'],[2,6,-1,'gold'],[3,6,-1,'gold'],[-4,7,-2,'gold'],[-3,7,-2,'gold'],[-2,7,-2,'gold'],[-1,7,-2,'gold'],[0,7,-2,'gold'],[1,7,-2,'gold'],[2,7,-2,'gold'],[3,7,-2,'gold'],[-4,8,-3,'gold'],[-3,8,-3,'gold'],[-2,8,-3,'gold'],[-1,8,-3,'gold'],[0,8,-3,'gold'],[1,8,-3,'gold'],[2,8,-3,'gold'],[3,8,-3,'gold'],[-4,9,-4,'gold'],[-3,9,-4,'gold'],[-2,9,-4,'gold'],[-1,9,-4,'gold'],[0,9,-4,'gold'],[1,9,-4,'gold'],[2,9,-4,'gold'],[3,9,-4,'gold'],[-4,10,-5,'gold'],[-3,10,-5,'gold'],[-2,10,-5,'gold'],[-1,10,-5,'gold'],[0,10,-5,'gold'],[1,10,-5,'gold'],[2,10,-5,'gold'],[3,10,-5,'gold'],[-4,11,-6,'gold'],[-3,11,-6,'gold'],[-2,11,-6,'gold'],[-1,11,-6,'gold'],[0,11,-6,'gold'],[1,11,-6,'gold'],[2,11,-6,'gold'],[3,11,-6,'gold'],[-4,12,-7,'gold'],[-3,12,-7,'gold'],[-2,12,-7,'gold'],[-1,12,-7,'gold'],[0,12,-7,'gold'],[1,12,-7,'gold'],[2,12,-7,'gold'],[3,12,-7,'gold'],[-4,13,-7,'gold'],[-4,14,-7,'gold'],[-4,15,-7,'gold'],[-4,16,-7,'gold'],[-4,17,-7,'gold'],[-4,18,-7,'gold'],[-4,19,-7,'gold'],[-4,20,-7,'gold'],[-3,13,-7,'gold'],[-3,14,-7,'gold'],[-3,15,-7,'gold'],[-3,16,-7,'gold'],[-3,17,-7,'gold'],[-3,18,-7,'gold'],[-3,19,-7,'gold'],[-3,20,-7,'gold'],[-2,13,-7,'gold'],[-2,14,-7,'gold'],[-2,15,-7,'gold'],[-2,16,-7,'gold'],[-2,17,-7,'gold'],[-2,18,-7,'gold'],[-2,19,-7,'gold'],[-2,20,-7,'gold'],[-1,13,-7,'gold'],[-1,14,-7,'gold'],[-1,15,-7,'gold'],[-1,16,-7,'gold'],[-1,17,-7,'gold'],[-1,18,-7,'gold'],[-1,19,-7,'gold'],[-1,20,-7,'gold'],[0,13,-7,'gold'],[0,14,-7,'gold'],[0,15,-7,'gold'],[0,16,-7,'gold'],[0,17,-7,'gold'],[0,18,-7,'gold'],[0,19,-7,'gold'],[0,20,-7,'gold'],[1,13,-7,'gold'],[1,14,-7,'gold'],[1,15,-7,'gold'],[1,16,-7,'gold'],[1,17,-7,'gold'],[1,18,-7,'gold'],[1,19,-7,'gold'],[1,20,-7,'gold'],[2,13,-7,'gold'],[2,14,-7,'gold'],[2,15,-7,'gold'],[2,16,-7,'gold'],[2,17,-7,'gold'],[2,18,-7,'gold'],[2,19,-7,'gold'],[2,20,-7,'gold'],[3,13,-7,'gold'],[3,14,-7,'gold'],[3,15,-7,'gold'],[3,16,-7,'gold'],[3,17,-7,'gold'],[3,18,-7,'gold'],[3,19,-7,'gold'],[3,20,-7,'gold'],[-2,16,-7,'conveyor_s'],[-1,16,-7,'conveyor_s'],[0,16,-7,'conveyor_s'],[1,16,-7,'conveyor_s'],[-4,21,-7,'gold'],[-3,21,-7,'gold'],[-2,21,-7,'gold'],[-1,21,-7,'gold'],[0,21,-7,'gold'],[1,21,-7,'gold'],[2,21,-7,'gold'],[3,21,-7,'gold'],[-4,22,-8,'gold'],[-3,22,-8,'gold'],[-2,22,-8,'gold'],[-1,22,-8,'gold'],[0,22,-8,'gold'],[1,22,-8,'gold'],[2,22,-8,'gold'],[3,22,-8,'gold'],[-4,23,-9,'gold'],[-3,23,-9,'gold'],[-2,23,-9,'gold'],[-1,23,-9,'gold'],[0,23,-9,'gold'],[1,23,-9,'gold'],[2,23,-9,'gold'],[3,23,-9,'gold'],[-4,24,-10,'gold'],[-3,24,-10,'gold'],[-2,24,-10,'gold'],[-1,24,-10,'gold'],[0,24,-10,'gold'],[1,24,-10,'gold'],[2,24,-10,'gold'],[3,24,-10,'gold'],[-4,25,-11,'gold'],[-4,26,-11,'gold'],[-4,27,-11,'gold'],[-4,28,-11,'gold'],[-4,29,-11,'gold'],[-4,30,-11,'gold'],[-3,25,-11,'gold'],[-3,26,-11,'gold'],[-3,27,-11,'gold'],[-3,28,-11,'gold'],[-3,29,-11,'gold'],[-3,30,-11,'gold'],[-2,25,-11,'gold'],[-2,26,-11,'gold'],[-2,27,-11,'gold'],[-2,28,-11,'gold'],[-2,29,-11,'gold'],[-2,30,-11,'gold'],[-1,25,-11,'gold'],[-1,26,-11,'gold'],[-1,27,-11,'gold'],[-1,28,-11,'gold'],[-1,29,-11,'gold'],[-1,30,-11,'gold'],[0,25,-11,'gold'],[0,26,-11,'gold'],[0,27,-11,'gold'],[0,28,-11,'gold'],[0,29,-11,'gold'],[0,30,-11,'gold'],[1,25,-11,'gold'],[1,26,-11,'gold'],[1,27,-11,'gold'],[1,28,-11,'gold'],[1,29,-11,'gold'],[1,30,-11,'gold'],[2,25,-11,'gold'],[2,26,-11,'gold'],[2,27,-11,'gold'],[2,28,-11,'gold'],[2,29,-11,'gold'],[2,30,-11,'gold'],[3,25,-11,'gold'],[3,26,-11,'gold'],[3,27,-11,'gold'],[3,28,-11,'gold'],[3,29,-11,'gold'],[3,30,-11,'gold'],[2,31,-11,'gold'],[2,32,-11,'gold'],[2,33,-11,'gold'],[2,34,-11,'gold'],[2,35,-11,'gold'],[2,36,-11,'gold'],[2,37,-11,'gold'],[2,38,-11,'gold'],[3,31,-11,'gold'],[3,32,-11,'gold'],[3,33,-11,'gold'],[3,34,-11,'gold'],[3,35,-11,'gold'],[3,36,-11,'gold'],[3,37,-11,'gold'],[3,38,-11,'gold'],[-4,39,-11,'gold'],[-3,39,-11,'gold'],[-2,39,-11,'gold'],[-1,39,-11,'gold'],[0,39,-11,'gold'],[1,39,-11,'gold'],[2,39,-11,'gold'],[3,39,-11,'gold'],[-4,40,-11,'gold'],[-4,41,-11,'gold'],[-4,42,-11,'gold'],[-4,43,-11,'gold'],[-4,44,-11,'gold'],[-4,45,-11,'gold'],[-4,46,-11,'gold'],[-4,47,-11,'gold'],[-3,40,-11,'gold'],[-3,41,-11,'gold'],[-3,42,-11,'gold'],[-3,43,-11,'gold'],[-3,44,-11,'gold'],[-3,45,-11,'gold'],[-3,46,-11,'gold'],[-3,47,-11,'gold'],[-4,48,-11,'gold'],[-4,49,-11,'gold'],[-4,50,-11,'gold'],[-4,51,-11,'gold'],[-4,52,-11,'gold'],[-3,48,-11,'gold'],[-3,49,-11,'gold'],[-3,50,-11,'gold'],[-3,51,-11,'gold'],[-3,52,-11,'gold'],[-2,48,-11,'gold'],[-2,49,-11,'gold'],[-2,50,-11,'gold'],[-2,51,-11,'gold'],[-2,52,-11,'gold'],[-1,48,-11,'gold'],[-1,49,-11,'gold'],[-1,50,-11,'gold'],[-1,51,-11,'gold'],[-1,52,-11,'gold'],[0,48,-11,'gold'],[0,49,-11,'gold'],[0,50,-11,'gold'],[0,51,-11,'gold'],[0,52,-11,'gold'],[1,48,-11,'gold'],[1,49,-11,'gold'],[1,50,-11,'gold'],[1,51,-11,'gold'],[1,52,-11,'gold'],[2,48,-11,'gold'],[2,49,-11,'gold'],[2,50,-11,'gold'],[2,51,-11,'gold'],[2,52,-11,'gold'],[3,48,-11,'gold'],[3,49,-11,'gold'],[3,50,-11,'gold'],[3,51,-11,'gold'],[3,52,-11,'gold'],[-6,53,-11,'gold'],[-5,53,-12,'gold'],[-4,53,-13,'gold'],[-3,53,-13,'gold'],[-2,53,-14,'gold'],[-1,53,-14,'gold'],[0,53,-14,'gold'],[1,53,-14,'gold'],[2,53,-13,'gold'],[3,53,-13,'gold'],[4,53,-12,'gold'],[5,53,-11,'gold'],[-6,54,-11,'gold'],[-5,54,-12,'gold'],[-4,54,-13,'gold'],[-3,54,-13,'gold'],[-2,54,-14,'gold'],[-1,54,-14,'gold'],[0,54,-14,'gold'],[1,54,-14,'gold'],[2,54,-13,'gold'],[3,54,-13,'gold'],[4,54,-12,'gold'],[5,54,-11,'gold'],[-6,55,-11,'gold'],[-5,55,-12,'gold'],[-4,55,-13,'gold'],[-3,55,-13,'gold'],[-2,55,-14,'gold'],[-1,55,-14,'gold'],[0,55,-14,'gold'],[1,55,-14,'gold'],[2,55,-13,'gold'],[3,55,-13,'gold'],[4,55,-12,'gold'],[5,55,-11,'gold'],[-6,56,-11,'gold'],[-5,56,-12,'gold'],[-4,56,-13,'gold'],[-3,56,-13,'gold'],[-2,56,-14,'gold'],[-1,56,-14,'gold'],[0,56,-14,'gold'],[1,56,-14,'gold'],[2,56,-13,'gold'],[3,56,-13,'gold'],[4,56,-12,'gold'],[5,56,-11,'gold'],[-6,57,-11,'gold'],[-5,57,-12,'gold'],[-4,57,-13,'gold'],[-3,57,-13,'gold'],[-2,57,-14,'gold'],[-1,57,-14,'gold'],[0,57,-14,'gold'],[1,57,-14,'gold'],[2,57,-13,'gold'],[3,57,-13,'gold'],[4,57,-12,'gold'],[5,57,-11,'gold'],[-6,58,-11,'gold'],[-5,58,-12,'gold'],[-4,58,-13,'gold'],[-3,58,-13,'gold'],[-2,58,-14,'gold'],[-1,58,-14,'gold'],[0,58,-14,'gold'],[1,58,-14,'gold'],[2,58,-13,'gold'],[3,58,-13,'gold'],[4,58,-12,'gold'],[5,58,-11,'gold'],[-6,59,-11,'gold'],[-5,59,-12,'gold'],[-4,59,-13,'gold'],[-3,59,-13,'gold'],[-2,59,-14,'gold'],[-1,59,-14,'gold'],[0,59,-14,'gold'],[1,59,-14,'gold'],[2,59,-13,'gold'],[3,59,-13,'gold'],[4,59,-12,'gold'],[5,59,-11,'gold'],[-6,60,-11,'gold'],[-5,60,-12,'gold'],[-4,60,-13,'gold'],[-3,60,-13,'gold'],[-2,60,-14,'gold'],[-1,60,-14,'gold'],[0,60,-14,'gold'],[1,60,-14,'gold'],[2,60,-13,'gold'],[3,60,-13,'gold'],[4,60,-12,'gold'],[5,60,-11,'gold'],[-6,61,-11,'gold'],[-5,61,-12,'gold'],[-4,61,-13,'gold'],[-3,61,-13,'gold'],[-2,61,-14,'gold'],[-1,61,-14,'gold'],[0,61,-14,'gold'],[1,61,-14,'gold'],[2,61,-13,'gold'],[3,61,-13,'gold'],[4,61,-12,'gold'],[5,61,-11,'gold'],[-6,62,-11,'gold'],[-5,62,-12,'gold'],[-4,62,-13,'gold'],[-3,62,-13,'gold'],[-2,62,-14,'gold'],[-1,62,-14,'gold'],[0,62,-14,'gold'],[1,62,-14,'gold'],[2,62,-13,'gold'],[3,62,-13,'gold'],[4,62,-12,'gold'],[5,62,-11,'gold'],[-6,63,-11,'gold'],[-5,63,-12,'gold'],[-4,63,-13,'gold'],[-3,63,-13,'gold'],[-2,63,-14,'gold'],[-1,63,-14,'gold'],[0,63,-14,'gold'],[1,63,-14,'gold'],[2,63,-13,'gold'],[3,63,-13,'gold'],[4,63,-12,'gold'],[5,63,-11,'gold'],[-6,64,-11,'gold'],[-5,64,-12,'gold'],[-4,64,-13,'gold'],[-3,64,-13,'gold'],[-2,64,-14,'gold'],[-1,64,-14,'gold'],[0,64,-14,'gold'],[1,64,-14,'gold'],[2,64,-13,'gold'],[3,64,-13,'gold'],[4,64,-12,'gold'],[5,64,-11,'gold'],[-6,65,-11,'gold'],[-5,65,-12,'gold'],[-4,65,-13,'gold'],[-3,65,-13,'gold'],[-2,65,-14,'gold'],[-1,65,-14,'gold'],[0,65,-14,'gold'],[1,65,-14,'gold'],[2,65,-13,'gold'],[3,65,-13,'gold'],[4,65,-12,'gold'],[5,65,-11,'gold'],[-6,66,-11,'gold'],[-5,66,-12,'gold'],[-4,66,-13,'gold'],[-3,66,-13,'gold'],[-2,66,-14,'gold'],[-1,66,-14,'gold'],[0,66,-14,'gold'],[1,66,-14,'gold'],[2,66,-13,'gold'],[3,66,-13,'gold'],[4,66,-12,'gold'],[5,66,-11,'gold'],[-4,67,-14,'gold'],[-4,68,-14,'gold'],[-4,69,-14,'gold'],[-4,70,-14,'gold'],[-4,71,-14,'gold'],[-4,72,-14,'gold'],[-3,67,-14,'gold'],[-3,68,-14,'gold'],[-3,69,-14,'gold'],[-3,70,-14,'gold'],[-3,71,-14,'gold'],[-3,72,-14,'gold'],[-2,67,-14,'gold'],[-2,68,-14,'gold'],[-2,69,-14,'gold'],[-2,70,-14,'gold'],[-2,71,-14,'gold'],[-2,72,-14,'gold'],[-1,67,-14,'gold'],[-1,68,-14,'gold'],[-1,69,-14,'gold'],[-1,70,-14,'gold'],[-1,71,-14,'gold'],[-1,72,-14,'gold'],[0,67,-14,'gold'],[0,68,-14,'gold'],[0,69,-14,'gold'],[0,70,-14,'gold'],[0,71,-14,'gold'],[0,72,-14,'gold'],[1,67,-14,'gold'],[1,68,-14,'gold'],[1,69,-14,'gold'],[1,70,-14,'gold'],[1,71,-14,'gold'],[1,72,-14,'gold'],[2,67,-14,'gold'],[2,68,-14,'gold'],[2,69,-14,'gold'],[2,70,-14,'gold'],[2,71,-14,'gold'],[2,72,-14,'gold'],[3,67,-14,'gold'],[3,68,-14,'gold'],[3,69,-14,'gold'],[3,70,-14,'gold'],[3,71,-14,'gold'],[3,72,-14,'gold'],[-4,73,-14,'gold'],[-3,73,-14,'gold'],[-2,73,-14,'gold'],[-1,73,-14,'gold'],[0,73,-14,'gold'],[1,73,-14,'gold'],[2,73,-14,'gold'],[3,73,-14,'gold'],[-4,74,-15,'gold'],[-3,74,-15,'gold'],[-2,74,-15,'gold'],[-1,74,-15,'gold'],[0,74,-15,'gold'],[1,74,-15,'gold'],[2,74,-15,'gold'],[3,74,-15,'gold'],[-4,75,-16,'gold'],[-3,75,-16,'gold'],[-2,75,-16,'gold'],[-1,75,-16,'gold'],[0,75,-16,'gold'],[1,75,-16,'gold'],[2,75,-16,'gold'],[3,75,-16,'gold'],[-4,76,-17,'gold'],[-3,76,-17,'gold'],[-2,76,-17,'gold'],[-1,76,-17,'gold'],[0,76,-17,'gold'],[1,76,-17,'gold'],[2,76,-17,'gold'],[3,76,-17,'gold'],[-4,77,-18,'goal'],[-4,78,-18,'goal'],[-4,79,-18,'goal'],[-4,80,-18,'goal'],[-4,81,-18,'goal'],[-3,77,-18,'goal'],[-3,78,-18,'goal'],[-3,79,-18,'goal'],[-3,80,-18,'goal'],[-3,81,-18,'goal'],[-2,77,-18,'goal'],[-2,78,-18,'goal'],[-2,79,-18,'goal'],[-2,80,-18,'goal'],[-2,81,-18,'goal'],[-1,77,-18,'goal'],[-1,78,-18,'goal'],[-1,79,-18,'goal'],[-1,80,-18,'goal'],[-1,81,-18,'goal'],[0,77,-18,'goal'],[0,78,-18,'goal'],[0,79,-18,'goal'],[0,80,-18,'goal'],[0,81,-18,'goal'],[1,77,-18,'goal'],[1,78,-18,'goal'],[1,79,-18,'goal'],[1,80,-18,'goal'],[1,81,-18,'goal'],[2,77,-18,'goal'],[2,78,-18,'goal'],[2,79,-18,'goal'],[2,80,-18,'goal'],[2,81,-18,'goal'],[3,77,-18,'goal'],[3,78,-18,'goal'],[3,79,-18,'goal'],[3,80,-18,'goal'],[3,81,-18,'goal']
+],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:78,gz:-18},
 enemies:[
-  {type:'rollerball',gx:0,gy:8,gz:-3,small:true,path:[{gx:-2,gy:7,gz:-3},{gx:2,gy:7,gz:-3}]},
-  {type:'pyramid',gx:0,gy:14,gz:-6,path:[{gx:-2,gy:12,gz:-6},{gx:2,gy:20,gz:-6}]},
-  {type:'bruiser',gx:3,gy:31,gz:-12,path:[{gx:1,gy:29,gz:-12},{gx:8,gy:35,gz:-12}]},
-  {type:'wheel',gx:-2,gy:30,gz:-12,path:[{gx:-3,gy:29,gz:-12},{gx:1,gy:30,gz:-12}]},
-  {type:'ghost',gx:-2,gy:42,gz:-18,path:[{gx:-4,gy:39,gz:-18},{gx:1,gy:47,gz:-18}]},
-  {type:'bruiser',gx:4,gy:43,gz:-18,path:[{gx:3,gy:42,gz:-18},{gx:7,gy:46,gz:-18}]},
-  {type:'skullhead',gx:4,gy:49,gz:-21,path:[{gx:3,gy:47,gz:-20},{gx:6,gy:53,gz:-23}]},
+  {type:'rollerball',gx:0,gy:8,gz:-3,small:true,path:[{gx:-3,gy:7,gz:-3},{gx:3,gy:7,gz:-3}]},
+  {type:'pyramid',gx:0,gy:16,gz:-7,path:[{gx:-3,gy:14,gz:-7},{gx:3,gy:20,gz:-7}]},
+  {type:'bruiser',gx:2,gy:33,gz:-11,path:[{gx:2,gy:31,gz:-11},{gx:3,gy:38,gz:-11}]},
+  {type:'wheel',gx:-3,gy:34,gz:-11,path:[{gx:-4,gy:31,gz:-11},{gx:-3,gy:38,gz:-11}]},
+  {type:'ghost',gx:0,gy:58,gz:-14,path:[{gx:-5,gy:54,gz:-14},{gx:4,gy:66,gz:-14}]},
+  {type:'bruiser',gx:0,gy:65,gz:-14,path:[{gx:-3,gy:63,gz:-14},{gx:3,gy:72,gz:-14}]}
 ]};}
 
-// ── L6: ICE CANYON — ice, slippery halfpipes + narrow zigzag ─────────────────
-// Two huge halfpipes, narrow exposed zigzags, conveyors, ice physics
-// gz: 0 → -8 → -16 → -24
-function L6(){const T='ice';return{tiles:[
-  ...B(-4,0,0,8,4,T),
-  ...RY(-4,4,0,9,8,T),           // gz 0→-8 steep ramp
-  // Halfpipe gz=-8, depth=5, center gz=-13
-  ...VY(-6,13,-8,22,12,5,T),
-  // Platform gz=-13
-  ...B(-3,35,-13,6,8,T),
-  // Conveyor south
-  ...[-1,0,1].map(i=>[i,39,-13,'conveyor_s']),
-  // Narrow 1-wide zigzag exposed gz=-13
-  ...C(1,43,-13,8,T),            // 1-wide south
-  ...R(-1,51,-13,3,T),           // jog west
-  ...C(-1,52,-13,7,T),           // 1-wide south
-  // Ramp gz -13→-20
-  ...RY(-3,59,-13,8,6,T),
-  // Second halfpipe gz=-20, depth=5, center gz=-25
-  ...VY(-6,67,-20,22,12,5,T),
-  // Platform gz=-25
-  ...B(-3,89,-25,6,8,T),
-  // Ramp gz -25→-30
-  ...RY(-3,97,-25,6,6,T),
-  // Goal gz=-30
-  ...B(-4,103,-30,8,5,'goal'),
-],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:104,gz:-30},icePhysics:true,
+// ── L6: ICE CANYON ─────────────────────────────────────────────────
+function L6(){return{tiles:[
+  [-4,0,0,'ice'],[-4,1,0,'ice'],[-4,2,0,'ice'],[-4,3,0,'ice'],[-4,4,0,'ice'],[-3,0,0,'ice'],[-3,1,0,'ice'],[-3,2,0,'ice'],[-3,3,0,'ice'],[-3,4,0,'ice'],[-2,0,0,'ice'],[-2,1,0,'ice'],[-2,2,0,'ice'],[-2,3,0,'ice'],[-2,4,0,'ice'],[-1,0,0,'ice'],[-1,1,0,'ice'],[-1,2,0,'ice'],[-1,3,0,'ice'],[-1,4,0,'ice'],[0,0,0,'ice'],[0,1,0,'ice'],[0,2,0,'ice'],[0,3,0,'ice'],[0,4,0,'ice'],[1,0,0,'ice'],[1,1,0,'ice'],[1,2,0,'ice'],[1,3,0,'ice'],[1,4,0,'ice'],[2,0,0,'ice'],[2,1,0,'ice'],[2,2,0,'ice'],[2,3,0,'ice'],[2,4,0,'ice'],[3,0,0,'ice'],[3,1,0,'ice'],[3,2,0,'ice'],[3,3,0,'ice'],[3,4,0,'ice'],[-4,5,0,'ice'],[-3,5,0,'ice'],[-2,5,0,'ice'],[-1,5,0,'ice'],[0,5,0,'ice'],[1,5,0,'ice'],[2,5,0,'ice'],[3,5,0,'ice'],[-4,6,-1,'ice'],[-3,6,-1,'ice'],[-2,6,-1,'ice'],[-1,6,-1,'ice'],[0,6,-1,'ice'],[1,6,-1,'ice'],[2,6,-1,'ice'],[3,6,-1,'ice'],[-4,7,-2,'ice'],[-3,7,-2,'ice'],[-2,7,-2,'ice'],[-1,7,-2,'ice'],[0,7,-2,'ice'],[1,7,-2,'ice'],[2,7,-2,'ice'],[3,7,-2,'ice'],[-4,8,-3,'ice'],[-3,8,-3,'ice'],[-2,8,-3,'ice'],[-1,8,-3,'ice'],[0,8,-3,'ice'],[1,8,-3,'ice'],[2,8,-3,'ice'],[3,8,-3,'ice'],[-4,9,-4,'ice'],[-3,9,-4,'ice'],[-2,9,-4,'ice'],[-1,9,-4,'ice'],[0,9,-4,'ice'],[1,9,-4,'ice'],[2,9,-4,'ice'],[3,9,-4,'ice'],[-4,10,-5,'ice'],[-3,10,-5,'ice'],[-2,10,-5,'ice'],[-1,10,-5,'ice'],[0,10,-5,'ice'],[1,10,-5,'ice'],[2,10,-5,'ice'],[3,10,-5,'ice'],[-4,11,-6,'ice'],[-3,11,-6,'ice'],[-2,11,-6,'ice'],[-1,11,-6,'ice'],[0,11,-6,'ice'],[1,11,-6,'ice'],[2,11,-6,'ice'],[3,11,-6,'ice'],[-4,12,-7,'ice'],[-3,12,-7,'ice'],[-2,12,-7,'ice'],[-1,12,-7,'ice'],[0,12,-7,'ice'],[1,12,-7,'ice'],[2,12,-7,'ice'],[3,12,-7,'ice'],[-4,13,-8,'ice'],[-3,13,-8,'ice'],[-2,13,-8,'ice'],[-1,13,-8,'ice'],[0,13,-8,'ice'],[1,13,-8,'ice'],[2,13,-8,'ice'],[3,13,-8,'ice'],[-4,14,-8,'ice'],[-4,15,-8,'ice'],[-4,16,-8,'ice'],[-4,17,-8,'ice'],[-4,18,-8,'ice'],[-4,19,-8,'ice'],[-3,14,-8,'ice'],[-3,15,-8,'ice'],[-3,16,-8,'ice'],[-3,17,-8,'ice'],[-3,18,-8,'ice'],[-3,19,-8,'ice'],[-2,14,-8,'ice'],[-2,15,-8,'ice'],[-2,16,-8,'ice'],[-2,17,-8,'ice'],[-2,18,-8,'ice'],[-2,19,-8,'ice'],[-1,14,-8,'ice'],[-1,15,-8,'ice'],[-1,16,-8,'ice'],[-1,17,-8,'ice'],[-1,18,-8,'ice'],[-1,19,-8,'ice'],[0,14,-8,'ice'],[0,15,-8,'ice'],[0,16,-8,'ice'],[0,17,-8,'ice'],[0,18,-8,'ice'],[0,19,-8,'ice'],[1,14,-8,'ice'],[1,15,-8,'ice'],[1,16,-8,'ice'],[1,17,-8,'ice'],[1,18,-8,'ice'],[1,19,-8,'ice'],[2,14,-8,'ice'],[2,15,-8,'ice'],[2,16,-8,'ice'],[2,17,-8,'ice'],[2,18,-8,'ice'],[2,19,-8,'ice'],[3,14,-8,'ice'],[3,15,-8,'ice'],[3,16,-8,'ice'],[3,17,-8,'ice'],[3,18,-8,'ice'],[3,19,-8,'ice'],[-7,20,-8,'ice'],[-6,20,-9,'ice'],[-5,20,-10,'ice'],[-4,20,-11,'ice'],[-3,20,-12,'ice'],[-2,20,-12,'ice'],[-1,20,-13,'ice'],[0,20,-13,'ice'],[1,20,-12,'ice'],[2,20,-12,'ice'],[3,20,-11,'ice'],[4,20,-10,'ice'],[5,20,-9,'ice'],[6,20,-8,'ice'],[-7,21,-8,'ice'],[-6,21,-9,'ice'],[-5,21,-10,'ice'],[-4,21,-11,'ice'],[-3,21,-12,'ice'],[-2,21,-12,'ice'],[-1,21,-13,'ice'],[0,21,-13,'ice'],[1,21,-12,'ice'],[2,21,-12,'ice'],[3,21,-11,'ice'],[4,21,-10,'ice'],[5,21,-9,'ice'],[6,21,-8,'ice'],[-7,22,-8,'ice'],[-6,22,-9,'ice'],[-5,22,-10,'ice'],[-4,22,-11,'ice'],[-3,22,-12,'ice'],[-2,22,-12,'ice'],[-1,22,-13,'ice'],[0,22,-13,'ice'],[1,22,-12,'ice'],[2,22,-12,'ice'],[3,22,-11,'ice'],[4,22,-10,'ice'],[5,22,-9,'ice'],[6,22,-8,'ice'],[-7,23,-8,'ice'],[-6,23,-9,'ice'],[-5,23,-10,'ice'],[-4,23,-11,'ice'],[-3,23,-12,'ice'],[-2,23,-12,'ice'],[-1,23,-13,'ice'],[0,23,-13,'ice'],[1,23,-12,'ice'],[2,23,-12,'ice'],[3,23,-11,'ice'],[4,23,-10,'ice'],[5,23,-9,'ice'],[6,23,-8,'ice'],[-7,24,-8,'ice'],[-6,24,-9,'ice'],[-5,24,-10,'ice'],[-4,24,-11,'ice'],[-3,24,-12,'ice'],[-2,24,-12,'ice'],[-1,24,-13,'ice'],[0,24,-13,'ice'],[1,24,-12,'ice'],[2,24,-12,'ice'],[3,24,-11,'ice'],[4,24,-10,'ice'],[5,24,-9,'ice'],[6,24,-8,'ice'],[-7,25,-8,'ice'],[-6,25,-9,'ice'],[-5,25,-10,'ice'],[-4,25,-11,'ice'],[-3,25,-12,'ice'],[-2,25,-12,'ice'],[-1,25,-13,'ice'],[0,25,-13,'ice'],[1,25,-12,'ice'],[2,25,-12,'ice'],[3,25,-11,'ice'],[4,25,-10,'ice'],[5,25,-9,'ice'],[6,25,-8,'ice'],[-7,26,-8,'ice'],[-6,26,-9,'ice'],[-5,26,-10,'ice'],[-4,26,-11,'ice'],[-3,26,-12,'ice'],[-2,26,-12,'ice'],[-1,26,-13,'ice'],[0,26,-13,'ice'],[1,26,-12,'ice'],[2,26,-12,'ice'],[3,26,-11,'ice'],[4,26,-10,'ice'],[5,26,-9,'ice'],[6,26,-8,'ice'],[-7,27,-8,'ice'],[-6,27,-9,'ice'],[-5,27,-10,'ice'],[-4,27,-11,'ice'],[-3,27,-12,'ice'],[-2,27,-12,'ice'],[-1,27,-13,'ice'],[0,27,-13,'ice'],[1,27,-12,'ice'],[2,27,-12,'ice'],[3,27,-11,'ice'],[4,27,-10,'ice'],[5,27,-9,'ice'],[6,27,-8,'ice'],[-7,28,-8,'ice'],[-6,28,-9,'ice'],[-5,28,-10,'ice'],[-4,28,-11,'ice'],[-3,28,-12,'ice'],[-2,28,-12,'ice'],[-1,28,-13,'ice'],[0,28,-13,'ice'],[1,28,-12,'ice'],[2,28,-12,'ice'],[3,28,-11,'ice'],[4,28,-10,'ice'],[5,28,-9,'ice'],[6,28,-8,'ice'],[-7,29,-8,'ice'],[-6,29,-9,'ice'],[-5,29,-10,'ice'],[-4,29,-11,'ice'],[-3,29,-12,'ice'],[-2,29,-12,'ice'],[-1,29,-13,'ice'],[0,29,-13,'ice'],[1,29,-12,'ice'],[2,29,-12,'ice'],[3,29,-11,'ice'],[4,29,-10,'ice'],[5,29,-9,'ice'],[6,29,-8,'ice'],[-7,30,-8,'ice'],[-6,30,-9,'ice'],[-5,30,-10,'ice'],[-4,30,-11,'ice'],[-3,30,-12,'ice'],[-2,30,-12,'ice'],[-1,30,-13,'ice'],[0,30,-13,'ice'],[1,30,-12,'ice'],[2,30,-12,'ice'],[3,30,-11,'ice'],[4,30,-10,'ice'],[5,30,-9,'ice'],[6,30,-8,'ice'],[-7,31,-8,'ice'],[-6,31,-9,'ice'],[-5,31,-10,'ice'],[-4,31,-11,'ice'],[-3,31,-12,'ice'],[-2,31,-12,'ice'],[-1,31,-13,'ice'],[0,31,-13,'ice'],[1,31,-12,'ice'],[2,31,-12,'ice'],[3,31,-11,'ice'],[4,31,-10,'ice'],[5,31,-9,'ice'],[6,31,-8,'ice'],[-7,32,-8,'ice'],[-6,32,-9,'ice'],[-5,32,-10,'ice'],[-4,32,-11,'ice'],[-3,32,-12,'ice'],[-2,32,-12,'ice'],[-1,32,-13,'ice'],[0,32,-13,'ice'],[1,32,-12,'ice'],[2,32,-12,'ice'],[3,32,-11,'ice'],[4,32,-10,'ice'],[5,32,-9,'ice'],[6,32,-8,'ice'],[-7,33,-8,'ice'],[-6,33,-9,'ice'],[-5,33,-10,'ice'],[-4,33,-11,'ice'],[-3,33,-12,'ice'],[-2,33,-12,'ice'],[-1,33,-13,'ice'],[0,33,-13,'ice'],[1,33,-12,'ice'],[2,33,-12,'ice'],[3,33,-11,'ice'],[4,33,-10,'ice'],[5,33,-9,'ice'],[6,33,-8,'ice'],[-7,34,-8,'ice'],[-6,34,-9,'ice'],[-5,34,-10,'ice'],[-4,34,-11,'ice'],[-3,34,-12,'ice'],[-2,34,-12,'ice'],[-1,34,-13,'ice'],[0,34,-13,'ice'],[1,34,-12,'ice'],[2,34,-12,'ice'],[3,34,-11,'ice'],[4,34,-10,'ice'],[5,34,-9,'ice'],[6,34,-8,'ice'],[-7,35,-8,'ice'],[-6,35,-9,'ice'],[-5,35,-10,'ice'],[-4,35,-11,'ice'],[-3,35,-12,'ice'],[-2,35,-12,'ice'],[-1,35,-13,'ice'],[0,35,-13,'ice'],[1,35,-12,'ice'],[2,35,-12,'ice'],[3,35,-11,'ice'],[4,35,-10,'ice'],[5,35,-9,'ice'],[6,35,-8,'ice'],[-7,36,-8,'ice'],[-6,36,-9,'ice'],[-5,36,-10,'ice'],[-4,36,-11,'ice'],[-3,36,-12,'ice'],[-2,36,-12,'ice'],[-1,36,-13,'ice'],[0,36,-13,'ice'],[1,36,-12,'ice'],[2,36,-12,'ice'],[3,36,-11,'ice'],[4,36,-10,'ice'],[5,36,-9,'ice'],[6,36,-8,'ice'],[-7,37,-8,'ice'],[-6,37,-9,'ice'],[-5,37,-10,'ice'],[-4,37,-11,'ice'],[-3,37,-12,'ice'],[-2,37,-12,'ice'],[-1,37,-13,'ice'],[0,37,-13,'ice'],[1,37,-12,'ice'],[2,37,-12,'ice'],[3,37,-11,'ice'],[4,37,-10,'ice'],[5,37,-9,'ice'],[6,37,-8,'ice'],[-4,38,-13,'ice'],[-4,39,-13,'ice'],[-4,40,-13,'ice'],[-4,41,-13,'ice'],[-4,42,-13,'ice'],[-4,43,-13,'ice'],[-3,38,-13,'ice'],[-3,39,-13,'ice'],[-3,40,-13,'ice'],[-3,41,-13,'ice'],[-3,42,-13,'ice'],[-3,43,-13,'ice'],[-2,38,-13,'ice'],[-2,39,-13,'ice'],[-2,40,-13,'ice'],[-2,41,-13,'ice'],[-2,42,-13,'ice'],[-2,43,-13,'ice'],[-1,38,-13,'ice'],[-1,39,-13,'ice'],[-1,40,-13,'ice'],[-1,41,-13,'ice'],[-1,42,-13,'ice'],[-1,43,-13,'ice'],[0,38,-13,'ice'],[0,39,-13,'ice'],[0,40,-13,'ice'],[0,41,-13,'ice'],[0,42,-13,'ice'],[0,43,-13,'ice'],[1,38,-13,'ice'],[1,39,-13,'ice'],[1,40,-13,'ice'],[1,41,-13,'ice'],[1,42,-13,'ice'],[1,43,-13,'ice'],[2,38,-13,'ice'],[2,39,-13,'ice'],[2,40,-13,'ice'],[2,41,-13,'ice'],[2,42,-13,'ice'],[2,43,-13,'ice'],[3,38,-13,'ice'],[3,39,-13,'ice'],[3,40,-13,'ice'],[3,41,-13,'ice'],[3,42,-13,'ice'],[3,43,-13,'ice'],[-2,40,-13,'conveyor_s'],[-1,40,-13,'conveyor_s'],[0,40,-13,'conveyor_s'],[1,40,-13,'conveyor_s'],[2,44,-13,'ice'],[2,45,-13,'ice'],[2,46,-13,'ice'],[2,47,-13,'ice'],[2,48,-13,'ice'],[2,49,-13,'ice'],[2,50,-13,'ice'],[2,51,-13,'ice'],[3,44,-13,'ice'],[3,45,-13,'ice'],[3,46,-13,'ice'],[3,47,-13,'ice'],[3,48,-13,'ice'],[3,49,-13,'ice'],[3,50,-13,'ice'],[3,51,-13,'ice'],[-4,52,-13,'ice'],[-3,52,-13,'ice'],[-2,52,-13,'ice'],[-1,52,-13,'ice'],[0,52,-13,'ice'],[1,52,-13,'ice'],[2,52,-13,'ice'],[3,52,-13,'ice'],[-4,53,-13,'ice'],[-4,54,-13,'ice'],[-4,55,-13,'ice'],[-4,56,-13,'ice'],[-4,57,-13,'ice'],[-4,58,-13,'ice'],[-4,59,-13,'ice'],[-4,60,-13,'ice'],[-3,53,-13,'ice'],[-3,54,-13,'ice'],[-3,55,-13,'ice'],[-3,56,-13,'ice'],[-3,57,-13,'ice'],[-3,58,-13,'ice'],[-3,59,-13,'ice'],[-3,60,-13,'ice'],[-4,61,-13,'ice'],[-3,61,-13,'ice'],[-2,61,-13,'ice'],[-1,61,-13,'ice'],[0,61,-13,'ice'],[1,61,-13,'ice'],[2,61,-13,'ice'],[3,61,-13,'ice'],[-4,62,-13,'ice'],[-3,62,-13,'ice'],[-2,62,-13,'ice'],[-1,62,-13,'ice'],[0,62,-13,'ice'],[1,62,-13,'ice'],[2,62,-13,'ice'],[3,62,-13,'ice'],[-4,63,-14,'ice'],[-3,63,-14,'ice'],[-2,63,-14,'ice'],[-1,63,-14,'ice'],[0,63,-14,'ice'],[1,63,-14,'ice'],[2,63,-14,'ice'],[3,63,-14,'ice'],[-4,64,-15,'ice'],[-3,64,-15,'ice'],[-2,64,-15,'ice'],[-1,64,-15,'ice'],[0,64,-15,'ice'],[1,64,-15,'ice'],[2,64,-15,'ice'],[3,64,-15,'ice'],[-4,65,-16,'ice'],[-3,65,-16,'ice'],[-2,65,-16,'ice'],[-1,65,-16,'ice'],[0,65,-16,'ice'],[1,65,-16,'ice'],[2,65,-16,'ice'],[3,65,-16,'ice'],[-4,66,-17,'ice'],[-3,66,-17,'ice'],[-2,66,-17,'ice'],[-1,66,-17,'ice'],[0,66,-17,'ice'],[1,66,-17,'ice'],[2,66,-17,'ice'],[3,66,-17,'ice'],[-7,67,-18,'ice'],[-6,67,-19,'ice'],[-5,67,-20,'ice'],[-4,67,-21,'ice'],[-3,67,-22,'ice'],[-2,67,-22,'ice'],[-1,67,-23,'ice'],[0,67,-23,'ice'],[1,67,-22,'ice'],[2,67,-22,'ice'],[3,67,-21,'ice'],[4,67,-20,'ice'],[5,67,-19,'ice'],[6,67,-18,'ice'],[-7,68,-18,'ice'],[-6,68,-19,'ice'],[-5,68,-20,'ice'],[-4,68,-21,'ice'],[-3,68,-22,'ice'],[-2,68,-22,'ice'],[-1,68,-23,'ice'],[0,68,-23,'ice'],[1,68,-22,'ice'],[2,68,-22,'ice'],[3,68,-21,'ice'],[4,68,-20,'ice'],[5,68,-19,'ice'],[6,68,-18,'ice'],[-7,69,-18,'ice'],[-6,69,-19,'ice'],[-5,69,-20,'ice'],[-4,69,-21,'ice'],[-3,69,-22,'ice'],[-2,69,-22,'ice'],[-1,69,-23,'ice'],[0,69,-23,'ice'],[1,69,-22,'ice'],[2,69,-22,'ice'],[3,69,-21,'ice'],[4,69,-20,'ice'],[5,69,-19,'ice'],[6,69,-18,'ice'],[-7,70,-18,'ice'],[-6,70,-19,'ice'],[-5,70,-20,'ice'],[-4,70,-21,'ice'],[-3,70,-22,'ice'],[-2,70,-22,'ice'],[-1,70,-23,'ice'],[0,70,-23,'ice'],[1,70,-22,'ice'],[2,70,-22,'ice'],[3,70,-21,'ice'],[4,70,-20,'ice'],[5,70,-19,'ice'],[6,70,-18,'ice'],[-7,71,-18,'ice'],[-6,71,-19,'ice'],[-5,71,-20,'ice'],[-4,71,-21,'ice'],[-3,71,-22,'ice'],[-2,71,-22,'ice'],[-1,71,-23,'ice'],[0,71,-23,'ice'],[1,71,-22,'ice'],[2,71,-22,'ice'],[3,71,-21,'ice'],[4,71,-20,'ice'],[5,71,-19,'ice'],[6,71,-18,'ice'],[-7,72,-18,'ice'],[-6,72,-19,'ice'],[-5,72,-20,'ice'],[-4,72,-21,'ice'],[-3,72,-22,'ice'],[-2,72,-22,'ice'],[-1,72,-23,'ice'],[0,72,-23,'ice'],[1,72,-22,'ice'],[2,72,-22,'ice'],[3,72,-21,'ice'],[4,72,-20,'ice'],[5,72,-19,'ice'],[6,72,-18,'ice'],[-7,73,-18,'ice'],[-6,73,-19,'ice'],[-5,73,-20,'ice'],[-4,73,-21,'ice'],[-3,73,-22,'ice'],[-2,73,-22,'ice'],[-1,73,-23,'ice'],[0,73,-23,'ice'],[1,73,-22,'ice'],[2,73,-22,'ice'],[3,73,-21,'ice'],[4,73,-20,'ice'],[5,73,-19,'ice'],[6,73,-18,'ice'],[-7,74,-18,'ice'],[-6,74,-19,'ice'],[-5,74,-20,'ice'],[-4,74,-21,'ice'],[-3,74,-22,'ice'],[-2,74,-22,'ice'],[-1,74,-23,'ice'],[0,74,-23,'ice'],[1,74,-22,'ice'],[2,74,-22,'ice'],[3,74,-21,'ice'],[4,74,-20,'ice'],[5,74,-19,'ice'],[6,74,-18,'ice'],[-7,75,-18,'ice'],[-6,75,-19,'ice'],[-5,75,-20,'ice'],[-4,75,-21,'ice'],[-3,75,-22,'ice'],[-2,75,-22,'ice'],[-1,75,-23,'ice'],[0,75,-23,'ice'],[1,75,-22,'ice'],[2,75,-22,'ice'],[3,75,-21,'ice'],[4,75,-20,'ice'],[5,75,-19,'ice'],[6,75,-18,'ice'],[-7,76,-18,'ice'],[-6,76,-19,'ice'],[-5,76,-20,'ice'],[-4,76,-21,'ice'],[-3,76,-22,'ice'],[-2,76,-22,'ice'],[-1,76,-23,'ice'],[0,76,-23,'ice'],[1,76,-22,'ice'],[2,76,-22,'ice'],[3,76,-21,'ice'],[4,76,-20,'ice'],[5,76,-19,'ice'],[6,76,-18,'ice'],[-7,77,-18,'ice'],[-6,77,-19,'ice'],[-5,77,-20,'ice'],[-4,77,-21,'ice'],[-3,77,-22,'ice'],[-2,77,-22,'ice'],[-1,77,-23,'ice'],[0,77,-23,'ice'],[1,77,-22,'ice'],[2,77,-22,'ice'],[3,77,-21,'ice'],[4,77,-20,'ice'],[5,77,-19,'ice'],[6,77,-18,'ice'],[-7,78,-18,'ice'],[-6,78,-19,'ice'],[-5,78,-20,'ice'],[-4,78,-21,'ice'],[-3,78,-22,'ice'],[-2,78,-22,'ice'],[-1,78,-23,'ice'],[0,78,-23,'ice'],[1,78,-22,'ice'],[2,78,-22,'ice'],[3,78,-21,'ice'],[4,78,-20,'ice'],[5,78,-19,'ice'],[6,78,-18,'ice'],[-7,79,-18,'ice'],[-6,79,-19,'ice'],[-5,79,-20,'ice'],[-4,79,-21,'ice'],[-3,79,-22,'ice'],[-2,79,-22,'ice'],[-1,79,-23,'ice'],[0,79,-23,'ice'],[1,79,-22,'ice'],[2,79,-22,'ice'],[3,79,-21,'ice'],[4,79,-20,'ice'],[5,79,-19,'ice'],[6,79,-18,'ice'],[-7,80,-18,'ice'],[-6,80,-19,'ice'],[-5,80,-20,'ice'],[-4,80,-21,'ice'],[-3,80,-22,'ice'],[-2,80,-22,'ice'],[-1,80,-23,'ice'],[0,80,-23,'ice'],[1,80,-22,'ice'],[2,80,-22,'ice'],[3,80,-21,'ice'],[4,80,-20,'ice'],[5,80,-19,'ice'],[6,80,-18,'ice'],[-7,81,-18,'ice'],[-6,81,-19,'ice'],[-5,81,-20,'ice'],[-4,81,-21,'ice'],[-3,81,-22,'ice'],[-2,81,-22,'ice'],[-1,81,-23,'ice'],[0,81,-23,'ice'],[1,81,-22,'ice'],[2,81,-22,'ice'],[3,81,-21,'ice'],[4,81,-20,'ice'],[5,81,-19,'ice'],[6,81,-18,'ice'],[-7,82,-18,'ice'],[-6,82,-19,'ice'],[-5,82,-20,'ice'],[-4,82,-21,'ice'],[-3,82,-22,'ice'],[-2,82,-22,'ice'],[-1,82,-23,'ice'],[0,82,-23,'ice'],[1,82,-22,'ice'],[2,82,-22,'ice'],[3,82,-21,'ice'],[4,82,-20,'ice'],[5,82,-19,'ice'],[6,82,-18,'ice'],[-7,83,-18,'ice'],[-6,83,-19,'ice'],[-5,83,-20,'ice'],[-4,83,-21,'ice'],[-3,83,-22,'ice'],[-2,83,-22,'ice'],[-1,83,-23,'ice'],[0,83,-23,'ice'],[1,83,-22,'ice'],[2,83,-22,'ice'],[3,83,-21,'ice'],[4,83,-20,'ice'],[5,83,-19,'ice'],[6,83,-18,'ice'],[-7,84,-18,'ice'],[-6,84,-19,'ice'],[-5,84,-20,'ice'],[-4,84,-21,'ice'],[-3,84,-22,'ice'],[-2,84,-22,'ice'],[-1,84,-23,'ice'],[0,84,-23,'ice'],[1,84,-22,'ice'],[2,84,-22,'ice'],[3,84,-21,'ice'],[4,84,-20,'ice'],[5,84,-19,'ice'],[6,84,-18,'ice'],[-4,85,-23,'ice'],[-4,86,-23,'ice'],[-4,87,-23,'ice'],[-4,88,-23,'ice'],[-4,89,-23,'ice'],[-4,90,-23,'ice'],[-3,85,-23,'ice'],[-3,86,-23,'ice'],[-3,87,-23,'ice'],[-3,88,-23,'ice'],[-3,89,-23,'ice'],[-3,90,-23,'ice'],[-2,85,-23,'ice'],[-2,86,-23,'ice'],[-2,87,-23,'ice'],[-2,88,-23,'ice'],[-2,89,-23,'ice'],[-2,90,-23,'ice'],[-1,85,-23,'ice'],[-1,86,-23,'ice'],[-1,87,-23,'ice'],[-1,88,-23,'ice'],[-1,89,-23,'ice'],[-1,90,-23,'ice'],[0,85,-23,'ice'],[0,86,-23,'ice'],[0,87,-23,'ice'],[0,88,-23,'ice'],[0,89,-23,'ice'],[0,90,-23,'ice'],[1,85,-23,'ice'],[1,86,-23,'ice'],[1,87,-23,'ice'],[1,88,-23,'ice'],[1,89,-23,'ice'],[1,90,-23,'ice'],[2,85,-23,'ice'],[2,86,-23,'ice'],[2,87,-23,'ice'],[2,88,-23,'ice'],[2,89,-23,'ice'],[2,90,-23,'ice'],[3,85,-23,'ice'],[3,86,-23,'ice'],[3,87,-23,'ice'],[3,88,-23,'ice'],[3,89,-23,'ice'],[3,90,-23,'ice'],[-4,91,-23,'ice'],[-3,91,-23,'ice'],[-2,91,-23,'ice'],[-1,91,-23,'ice'],[0,91,-23,'ice'],[1,91,-23,'ice'],[2,91,-23,'ice'],[3,91,-23,'ice'],[-4,92,-24,'ice'],[-3,92,-24,'ice'],[-2,92,-24,'ice'],[-1,92,-24,'ice'],[0,92,-24,'ice'],[1,92,-24,'ice'],[2,92,-24,'ice'],[3,92,-24,'ice'],[-4,93,-25,'ice'],[-3,93,-25,'ice'],[-2,93,-25,'ice'],[-1,93,-25,'ice'],[0,93,-25,'ice'],[1,93,-25,'ice'],[2,93,-25,'ice'],[3,93,-25,'ice'],[-4,94,-26,'ice'],[-3,94,-26,'ice'],[-2,94,-26,'ice'],[-1,94,-26,'ice'],[0,94,-26,'ice'],[1,94,-26,'ice'],[2,94,-26,'ice'],[3,94,-26,'ice'],[-4,95,-27,'goal'],[-4,96,-27,'goal'],[-4,97,-27,'goal'],[-4,98,-27,'goal'],[-4,99,-27,'goal'],[-3,95,-27,'goal'],[-3,96,-27,'goal'],[-3,97,-27,'goal'],[-3,98,-27,'goal'],[-3,99,-27,'goal'],[-2,95,-27,'goal'],[-2,96,-27,'goal'],[-2,97,-27,'goal'],[-2,98,-27,'goal'],[-2,99,-27,'goal'],[-1,95,-27,'goal'],[-1,96,-27,'goal'],[-1,97,-27,'goal'],[-1,98,-27,'goal'],[-1,99,-27,'goal'],[0,95,-27,'goal'],[0,96,-27,'goal'],[0,97,-27,'goal'],[0,98,-27,'goal'],[0,99,-27,'goal'],[1,95,-27,'goal'],[1,96,-27,'goal'],[1,97,-27,'goal'],[1,98,-27,'goal'],[1,99,-27,'goal'],[2,95,-27,'goal'],[2,96,-27,'goal'],[2,97,-27,'goal'],[2,98,-27,'goal'],[2,99,-27,'goal'],[3,95,-27,'goal'],[3,96,-27,'goal'],[3,97,-27,'goal'],[3,98,-27,'goal'],[3,99,-27,'goal']
+],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:96,gz:-27},
 enemies:[
   {type:'iceball',gx:0,gy:7,gz:-4,small:true,path:[{gx:-3,gy:6,gz:-4},{gx:3,gy:6,gz:-4}]},
-  {type:'pyramid',gx:-1,gy:22,gz:-12,path:[{gx:-5,gy:14,gz:-12},{gx:4,gy:34,gz:-12}]},
-  {type:'bruiser',gx:0,gy:28,gz:-12,path:[{gx:-5,gy:14,gz:-11},{gx:4,gy:34,gz:-11}]},
-  {type:'ghost',gx:0,gy:37,gz:-13,path:[{gx:-2,gy:36,gz:-13},{gx:2,gy:42,gz:-13}]},
-  {type:'bruiser',gx:0,gy:76,gz:-24,path:[{gx:-5,gy:68,gz:-24},{gx:4,gy:88,gz:-24}]},
-  {type:'skullhead',gx:0,gy:82,gz:-24,path:[{gx:-5,gy:68,gz:-23},{gx:4,gy:88,gz:-23}]},
-  {type:'bruiser',gx:0,gy:91,gz:-25,path:[{gx:-2,gy:90,gz:-25},{gx:3,gy:96,gz:-25}]},
+  {type:'bruiser',gx:0,gy:27,gz:-12,path:[{gx:-6,gy:21,gz:-12},{gx:5,gy:37,gz:-12}]},
+  {type:'pyramid',gx:-2,gy:32,gz:-12,path:[{gx:-5,gy:21,gz:-11},{gx:4,gy:37,gz:-11}]},
+  {type:'ghost',gx:0,gy:42,gz:-13,path:[{gx:-3,gy:40,gz:-13},{gx:3,gy:46,gz:-13}]},
+  {type:'bruiser',gx:0,gy:75,gz:-22,path:[{gx:-6,gy:68,gz:-22},{gx:5,gy:84,gz:-22}]},
+  {type:'bruiser',gx:0,gy:81,gz:-22,path:[{gx:-6,gy:68,gz:-21},{gx:5,gy:84,gz:-21}]},
+  {type:'skullhead',gx:0,gy:88,gz:-23,path:[{gx:-3,gy:86,gz:-23},{gx:3,gy:92,gz:-23}]}
 ]};}
 
-// ── L7: DARK MAZE — dark, winding corridors + 1-wide + chutes ───────────────
-// Winding zigzag corridors, 1-wide sections, chute shortcut, bruisers everywhere
-// gz: 0 → -6 → -12 → -18 → -24
-function L7(){const T='dark';return{tiles:[
-  ...B(-4,0,0,8,4,T),
-  // South wide gz=0
-  ...B(-4,4,0,8,8,T),
-  // Ramp gz 0→-6
-  ...RY(-4,12,0,7,8,T),
-  // East corridor gz=-6
-  ...B(-4,19,-6,16,4,T),
-  // Ramp east gz -6→-12
-  ...RX(12,19,-6,7,4,T),
-  // South corridor gz=-12
-  ...B(12,19,-12,4,14,T),
-  // Narrow 1-wide south gz=-12
-  ...C(14,33,-12,10,T),
-  // West jog + ramp gz -12→-18
-  ...B(10,43,-12,6,4,T),
-  ...RY(10,47,-12,7,6,T),
-  // East wide gz=-18
-  ...B(10,54,-18,14,6,T),
-  // Chute in — shortcut across gap
-  ...[[16,56,-18,'chute_in']],
-  // 1-wide north then ramp gz -18→-24
-  ...C(10,60,-18,8,T),
-  ...RY(10,68,-18,7,6,T),
-  // Chute out platform gz=-24
-  ...B(8,75,-24,8,8,T),
-  ...[[16,56+18,-24,'chute_out']],  // won't match — fix below
-  ...B(8,83,-24,8,5,'goal'),
-],start:{gx:0,gy:2,gz:0},goal:{gx:11,gy:84,gz:-24},
-chutes:[{inX:16,inY:56,outX:11,outY:75,outZ:-24}],
+// ── L7: DARK MAZE ─────────────────────────────────────────────────
+function L7(){return{tiles:[
+  [-4,0,0,'dark'],[-4,1,0,'dark'],[-4,2,0,'dark'],[-4,3,0,'dark'],[-4,4,0,'dark'],[-3,0,0,'dark'],[-3,1,0,'dark'],[-3,2,0,'dark'],[-3,3,0,'dark'],[-3,4,0,'dark'],[-2,0,0,'dark'],[-2,1,0,'dark'],[-2,2,0,'dark'],[-2,3,0,'dark'],[-2,4,0,'dark'],[-1,0,0,'dark'],[-1,1,0,'dark'],[-1,2,0,'dark'],[-1,3,0,'dark'],[-1,4,0,'dark'],[0,0,0,'dark'],[0,1,0,'dark'],[0,2,0,'dark'],[0,3,0,'dark'],[0,4,0,'dark'],[1,0,0,'dark'],[1,1,0,'dark'],[1,2,0,'dark'],[1,3,0,'dark'],[1,4,0,'dark'],[2,0,0,'dark'],[2,1,0,'dark'],[2,2,0,'dark'],[2,3,0,'dark'],[2,4,0,'dark'],[3,0,0,'dark'],[3,1,0,'dark'],[3,2,0,'dark'],[3,3,0,'dark'],[3,4,0,'dark'],[-4,5,0,'dark'],[-3,5,0,'dark'],[-2,5,0,'dark'],[-1,5,0,'dark'],[0,5,0,'dark'],[1,5,0,'dark'],[2,5,0,'dark'],[3,5,0,'dark'],[-4,6,-1,'dark'],[-3,6,-1,'dark'],[-2,6,-1,'dark'],[-1,6,-1,'dark'],[0,6,-1,'dark'],[1,6,-1,'dark'],[2,6,-1,'dark'],[3,6,-1,'dark'],[-4,7,-2,'dark'],[-3,7,-2,'dark'],[-2,7,-2,'dark'],[-1,7,-2,'dark'],[0,7,-2,'dark'],[1,7,-2,'dark'],[2,7,-2,'dark'],[3,7,-2,'dark'],[-4,8,-3,'dark'],[-3,8,-3,'dark'],[-2,8,-3,'dark'],[-1,8,-3,'dark'],[0,8,-3,'dark'],[1,8,-3,'dark'],[2,8,-3,'dark'],[3,8,-3,'dark'],[-4,9,-4,'dark'],[-3,9,-4,'dark'],[-2,9,-4,'dark'],[-1,9,-4,'dark'],[0,9,-4,'dark'],[1,9,-4,'dark'],[2,9,-4,'dark'],[3,9,-4,'dark'],[-4,10,-5,'dark'],[-3,10,-5,'dark'],[-2,10,-5,'dark'],[-1,10,-5,'dark'],[0,10,-5,'dark'],[1,10,-5,'dark'],[2,10,-5,'dark'],[3,10,-5,'dark'],[-4,11,-6,'dark'],[-3,11,-6,'dark'],[-2,11,-6,'dark'],[-1,11,-6,'dark'],[0,11,-6,'dark'],[1,11,-6,'dark'],[2,11,-6,'dark'],[3,11,-6,'dark'],[-4,12,-7,'dark'],[-3,12,-7,'dark'],[-2,12,-7,'dark'],[-1,12,-7,'dark'],[0,12,-7,'dark'],[1,12,-7,'dark'],[2,12,-7,'dark'],[3,12,-7,'dark'],[-4,13,-8,'dark'],[-3,13,-8,'dark'],[-2,13,-8,'dark'],[-1,13,-8,'dark'],[0,13,-8,'dark'],[1,13,-8,'dark'],[2,13,-8,'dark'],[3,13,-8,'dark'],[-4,14,-8,'dark'],[-4,15,-8,'dark'],[-4,16,-8,'dark'],[-4,17,-8,'dark'],[-4,18,-8,'dark'],[-4,19,-8,'dark'],[-3,14,-8,'dark'],[-3,15,-8,'dark'],[-3,16,-8,'dark'],[-3,17,-8,'dark'],[-3,18,-8,'dark'],[-3,19,-8,'dark'],[-2,14,-8,'dark'],[-2,15,-8,'dark'],[-2,16,-8,'dark'],[-2,17,-8,'dark'],[-2,18,-8,'dark'],[-2,19,-8,'dark'],[-1,14,-8,'dark'],[-1,15,-8,'dark'],[-1,16,-8,'dark'],[-1,17,-8,'dark'],[-1,18,-8,'dark'],[-1,19,-8,'dark'],[0,14,-8,'dark'],[0,15,-8,'dark'],[0,16,-8,'dark'],[0,17,-8,'dark'],[0,18,-8,'dark'],[0,19,-8,'dark'],[1,14,-8,'dark'],[1,15,-8,'dark'],[1,16,-8,'dark'],[1,17,-8,'dark'],[1,18,-8,'dark'],[1,19,-8,'dark'],[2,14,-8,'dark'],[2,15,-8,'dark'],[2,16,-8,'dark'],[2,17,-8,'dark'],[2,18,-8,'dark'],[2,19,-8,'dark'],[3,14,-8,'dark'],[3,15,-8,'dark'],[3,16,-8,'dark'],[3,17,-8,'dark'],[3,18,-8,'dark'],[3,19,-8,'dark'],[4,14,-8,'dark'],[4,15,-8,'dark'],[4,16,-8,'dark'],[4,17,-8,'dark'],[4,18,-8,'dark'],[4,19,-8,'dark'],[5,14,-9,'dark'],[5,15,-9,'dark'],[5,16,-9,'dark'],[5,17,-9,'dark'],[5,18,-9,'dark'],[5,19,-9,'dark'],[6,14,-10,'dark'],[6,15,-10,'dark'],[6,16,-10,'dark'],[6,17,-10,'dark'],[6,18,-10,'dark'],[6,19,-10,'dark'],[7,14,-11,'dark'],[7,15,-11,'dark'],[7,16,-11,'dark'],[7,17,-11,'dark'],[7,18,-11,'dark'],[7,19,-11,'dark'],[8,14,-12,'dark'],[8,15,-12,'dark'],[8,16,-12,'dark'],[8,17,-12,'dark'],[8,18,-12,'dark'],[8,19,-12,'dark'],[9,14,-13,'dark'],[9,15,-13,'dark'],[9,16,-13,'dark'],[9,17,-13,'dark'],[9,18,-13,'dark'],[9,19,-13,'dark'],[10,14,-14,'dark'],[10,15,-14,'dark'],[10,16,-14,'dark'],[10,17,-14,'dark'],[10,18,-14,'dark'],[10,19,-14,'dark'],[11,14,-14,'dark'],[11,15,-14,'dark'],[11,16,-14,'dark'],[11,17,-14,'dark'],[11,18,-14,'dark'],[11,19,-14,'dark'],[12,14,-14,'dark'],[12,15,-14,'dark'],[12,16,-14,'dark'],[12,17,-14,'dark'],[12,18,-14,'dark'],[12,19,-14,'dark'],[13,14,-14,'dark'],[13,15,-14,'dark'],[13,16,-14,'dark'],[13,17,-14,'dark'],[13,18,-14,'dark'],[13,19,-14,'dark'],[14,14,-14,'dark'],[14,15,-14,'dark'],[14,16,-14,'dark'],[14,17,-14,'dark'],[14,18,-14,'dark'],[14,19,-14,'dark'],[15,14,-14,'dark'],[15,15,-14,'dark'],[15,16,-14,'dark'],[15,17,-14,'dark'],[15,18,-14,'dark'],[15,19,-14,'dark'],[16,14,-14,'dark'],[16,15,-14,'dark'],[16,16,-14,'dark'],[16,17,-14,'dark'],[16,18,-14,'dark'],[16,19,-14,'dark'],[17,14,-14,'dark'],[17,15,-14,'dark'],[17,16,-14,'dark'],[17,17,-14,'dark'],[17,18,-14,'dark'],[17,19,-14,'dark'],[18,14,-14,'dark'],[18,15,-14,'dark'],[18,16,-14,'dark'],[18,17,-14,'dark'],[18,18,-14,'dark'],[18,19,-14,'dark'],[11,20,-14,'dark'],[11,21,-14,'dark'],[11,22,-14,'dark'],[11,23,-14,'dark'],[11,24,-14,'dark'],[11,25,-14,'dark'],[11,26,-14,'dark'],[11,27,-14,'dark'],[12,20,-14,'dark'],[12,21,-14,'dark'],[12,22,-14,'dark'],[12,23,-14,'dark'],[12,24,-14,'dark'],[12,25,-14,'dark'],[12,26,-14,'dark'],[12,27,-14,'dark'],[11,28,-14,'dark'],[12,28,-14,'dark'],[13,28,-14,'dark'],[14,28,-14,'dark'],[15,28,-14,'dark'],[16,28,-14,'dark'],[17,28,-14,'dark'],[18,28,-14,'dark'],[17,29,-14,'dark'],[17,30,-14,'dark'],[17,31,-14,'dark'],[17,32,-14,'dark'],[17,33,-14,'dark'],[17,34,-14,'dark'],[17,35,-14,'dark'],[17,36,-14,'dark'],[18,29,-14,'dark'],[18,30,-14,'dark'],[18,31,-14,'dark'],[18,32,-14,'dark'],[18,33,-14,'dark'],[18,34,-14,'dark'],[18,35,-14,'dark'],[18,36,-14,'dark'],[11,37,-14,'dark'],[11,38,-14,'dark'],[11,39,-14,'dark'],[11,40,-14,'dark'],[11,41,-14,'dark'],[11,42,-14,'dark'],[12,37,-14,'dark'],[12,38,-14,'dark'],[12,39,-14,'dark'],[12,40,-14,'dark'],[12,41,-14,'dark'],[12,42,-14,'dark'],[13,37,-14,'dark'],[13,38,-14,'dark'],[13,39,-14,'dark'],[13,40,-14,'dark'],[13,41,-14,'dark'],[13,42,-14,'dark'],[14,37,-14,'dark'],[14,38,-14,'dark'],[14,39,-14,'dark'],[14,40,-14,'dark'],[14,41,-14,'dark'],[14,42,-14,'dark'],[15,37,-14,'dark'],[15,38,-14,'dark'],[15,39,-14,'dark'],[15,40,-14,'dark'],[15,41,-14,'dark'],[15,42,-14,'dark'],[16,37,-14,'dark'],[16,38,-14,'dark'],[16,39,-14,'dark'],[16,40,-14,'dark'],[16,41,-14,'dark'],[16,42,-14,'dark'],[17,37,-14,'dark'],[17,38,-14,'dark'],[17,39,-14,'dark'],[17,40,-14,'dark'],[17,41,-14,'dark'],[17,42,-14,'dark'],[18,37,-14,'dark'],[18,38,-14,'dark'],[18,39,-14,'dark'],[18,40,-14,'dark'],[18,41,-14,'dark'],[18,42,-14,'dark'],[11,43,-14,'dark'],[12,43,-14,'dark'],[13,43,-14,'dark'],[14,43,-14,'dark'],[15,43,-14,'dark'],[16,43,-14,'dark'],[17,43,-14,'dark'],[18,43,-14,'dark'],[11,44,-15,'dark'],[12,44,-15,'dark'],[13,44,-15,'dark'],[14,44,-15,'dark'],[15,44,-15,'dark'],[16,44,-15,'dark'],[17,44,-15,'dark'],[18,44,-15,'dark'],[11,45,-16,'dark'],[12,45,-16,'dark'],[13,45,-16,'dark'],[14,45,-16,'dark'],[15,45,-16,'dark'],[16,45,-16,'dark'],[17,45,-16,'dark'],[18,45,-16,'dark'],[11,46,-17,'dark'],[12,46,-17,'dark'],[13,46,-17,'dark'],[14,46,-17,'dark'],[15,46,-17,'dark'],[16,46,-17,'dark'],[17,46,-17,'dark'],[18,46,-17,'dark'],[11,47,-18,'dark'],[12,47,-18,'dark'],[13,47,-18,'dark'],[14,47,-18,'dark'],[15,47,-18,'dark'],[16,47,-18,'dark'],[17,47,-18,'dark'],[18,47,-18,'dark'],[11,48,-19,'dark'],[11,49,-19,'dark'],[11,50,-19,'dark'],[11,51,-19,'dark'],[11,52,-19,'dark'],[11,53,-19,'dark'],[12,48,-19,'dark'],[12,49,-19,'dark'],[12,50,-19,'dark'],[12,51,-19,'dark'],[12,52,-19,'dark'],[12,53,-19,'dark'],[13,48,-19,'dark'],[13,49,-19,'dark'],[13,50,-19,'dark'],[13,51,-19,'dark'],[13,52,-19,'dark'],[13,53,-19,'dark'],[14,48,-19,'dark'],[14,49,-19,'dark'],[14,50,-19,'dark'],[14,51,-19,'dark'],[14,52,-19,'dark'],[14,53,-19,'dark'],[15,48,-19,'dark'],[15,49,-19,'dark'],[15,50,-19,'dark'],[15,51,-19,'dark'],[15,52,-19,'dark'],[15,53,-19,'dark'],[16,48,-19,'dark'],[16,49,-19,'dark'],[16,50,-19,'dark'],[16,51,-19,'dark'],[16,52,-19,'dark'],[16,53,-19,'dark'],[17,48,-19,'dark'],[17,49,-19,'dark'],[17,50,-19,'dark'],[17,51,-19,'dark'],[17,52,-19,'dark'],[17,53,-19,'dark'],[18,48,-19,'dark'],[18,49,-19,'dark'],[18,50,-19,'dark'],[18,51,-19,'dark'],[18,52,-19,'dark'],[18,53,-19,'dark'],[14,54,-19,'dark'],[14,55,-19,'dark'],[14,56,-19,'dark'],[14,57,-19,'dark'],[14,58,-19,'dark'],[14,59,-19,'dark'],[14,60,-19,'dark'],[12,61,-19,'dark'],[13,61,-19,'dark'],[14,61,-19,'dark'],[15,61,-19,'dark'],[16,61,-19,'dark'],[17,61,-19,'dark'],[12,62,-20,'dark'],[13,62,-20,'dark'],[14,62,-20,'dark'],[15,62,-20,'dark'],[16,62,-20,'dark'],[17,62,-20,'dark'],[12,63,-21,'dark'],[13,63,-21,'dark'],[14,63,-21,'dark'],[15,63,-21,'dark'],[16,63,-21,'dark'],[17,63,-21,'dark'],[12,64,-22,'dark'],[13,64,-22,'dark'],[14,64,-22,'dark'],[15,64,-22,'dark'],[16,64,-22,'dark'],[17,64,-22,'dark'],[11,65,-23,'goal'],[11,66,-23,'goal'],[11,67,-23,'goal'],[11,68,-23,'goal'],[11,69,-23,'goal'],[12,65,-23,'goal'],[12,66,-23,'goal'],[12,67,-23,'goal'],[12,68,-23,'goal'],[12,69,-23,'goal'],[13,65,-23,'goal'],[13,66,-23,'goal'],[13,67,-23,'goal'],[13,68,-23,'goal'],[13,69,-23,'goal'],[14,65,-23,'goal'],[14,66,-23,'goal'],[14,67,-23,'goal'],[14,68,-23,'goal'],[14,69,-23,'goal'],[15,65,-23,'goal'],[15,66,-23,'goal'],[15,67,-23,'goal'],[15,68,-23,'goal'],[15,69,-23,'goal'],[16,65,-23,'goal'],[16,66,-23,'goal'],[16,67,-23,'goal'],[16,68,-23,'goal'],[16,69,-23,'goal'],[17,65,-23,'goal'],[17,66,-23,'goal'],[17,67,-23,'goal'],[17,68,-23,'goal'],[17,69,-23,'goal'],[18,65,-23,'goal'],[18,66,-23,'goal'],[18,67,-23,'goal'],[18,68,-23,'goal'],[18,69,-23,'goal']
+],start:{gx:0,gy:2,gz:0},goal:{gx:14,gy:66,gz:-23},
 enemies:[
-  {type:'bruiser',gx:0,gy:8,gz:0,path:[{gx:-3,gy:6,gz:0},{gx:3,gy:11,gz:0}]},
-  {type:'pyramid',gx:4,gy:21,gz:-6,path:[{gx:-3,gy:20,gz:-6},{gx:11,gy:22,gz:-6}]},
-  {type:'bruiser',gx:14,gy:24,gz:-9,path:[{gx:12,gy:20,gz:-9},{gx:15,gy:32,gz:-9}]},
-  {type:'skullhead',gx:14,gy:36,gz:-12,path:[{gx:14,gy:33,gz:-12},{gx:14,gy:42,gz:-12}]},
-  {type:'bruiser',gx:12,gy:57,gz:-18,path:[{gx:10,gy:55,gz:-18},{gx:23,gy:59,gz:-18}]},
-  {type:'bruiser',gx:10,gy:63,gz:-18,path:[{gx:10,gy:60,gz:-18},{gx:10,gy:67,gz:-18}]},
-  {type:'bruiser',gx:11,gy:77,gz:-24,path:[{gx:8,gy:76,gz:-24},{gx:15,gy:82,gz:-24}]},
+  {type:'bruiser',gx:0,gy:8,gz:0,path:[{gx:-3,gy:6,gz:0},{gx:3,gy:12,gz:0}]},
+  {type:'pyramid',gx:7,gy:16,gz:-11,path:[{gx:4,gy:14,gz:-11},{gx:10,gy:19,gz:-11}]},
+  {type:'bruiser',gx:11,gy:23,gz:-14,path:[{gx:11,gy:20,gz:-14},{gx:12,gy:27,gz:-14}]},
+  {type:'skullhead',gx:17,gy:32,gz:-14,path:[{gx:17,gy:29,gz:-14},{gx:18,gy:36,gz:-14}]},
+  {type:'bruiser',gx:14,gy:56,gz:-19,path:[{gx:14,gy:54,gz:-19},{gx:14,gy:60,gz:-19}]},
+  {type:'bruiser',gx:14,gy:63,gz:-21,path:[{gx:12,gy:61,gz:-20},{gx:17,gy:64,gz:-22}]}
 ]};}
 
-// ── L8: BRUISER ALLEY — purple, gauntlet + waves + chutes ───────────────────
-// Narrow corridors full of bruisers, wave tiles, chute shortcuts
-// gz: 0 → -8 → -16 → -24 → -32
-function L8(){const T='purple';return{tiles:[
-  ...B(-4,0,0,8,4,T),
-  ...RY(-4,4,0,9,8,T),           // gz 0→-8 steep
-  // Wide gz=-8
-  ...B(-4,13,-8,8,10,T),
-  // Wave tiles
-  ...[-3,-2,-1,0,1,2].map(i=>[i,18,-8,'wave']),
-  // Narrow 2-wide gauntlet gz=-8
-  ...B(-1,23,-8,2,14,T),
-  // Ramp gz -8→-16
-  ...RY(-1,37,-8,9,2,T),
-  // Wide gz=-16
-  ...B(-4,46,-16,8,10,T),
-  // Chute in
-  ...[[0,51,-16,'chute_in']],
-  // 1-wide east then south
-  ...R(4,50,-16,6,T),...R(4,51,-16,6,T),
-  ...C(9,52,-16,10,T),
-  // Ramp gz -16→-24
-  ...RY(7,62,-16,9,2,T),
-  // Chute out + wide platform gz=-24
-  ...B(-4,71,-24,8,8,T),
-  ...[[0,51+20,-24,'chute_out']],
-  // 1-wide final approach
-  ...C(0,79,-24,8,T),
-  ...RY(0,87,-24,9,1,T),         // gz -24→-32, only 1 wide!
-  // Goal gz=-32
-  ...B(-3,96,-32,7,5,'goal'),
-],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:97,gz:-32},
-chutes:[{inX:0,inY:51,outX:0,outY:71,outZ:-24}],
+// ── L8: BRUISER ALLEY ─────────────────────────────────────────────────
+function L8(){return{tiles:[
+  [-4,0,0,'purple'],[-4,1,0,'purple'],[-4,2,0,'purple'],[-4,3,0,'purple'],[-4,4,0,'purple'],[-3,0,0,'purple'],[-3,1,0,'purple'],[-3,2,0,'purple'],[-3,3,0,'purple'],[-3,4,0,'purple'],[-2,0,0,'purple'],[-2,1,0,'purple'],[-2,2,0,'purple'],[-2,3,0,'purple'],[-2,4,0,'purple'],[-1,0,0,'purple'],[-1,1,0,'purple'],[-1,2,0,'purple'],[-1,3,0,'purple'],[-1,4,0,'purple'],[0,0,0,'purple'],[0,1,0,'purple'],[0,2,0,'purple'],[0,3,0,'purple'],[0,4,0,'purple'],[1,0,0,'purple'],[1,1,0,'purple'],[1,2,0,'purple'],[1,3,0,'purple'],[1,4,0,'purple'],[2,0,0,'purple'],[2,1,0,'purple'],[2,2,0,'purple'],[2,3,0,'purple'],[2,4,0,'purple'],[3,0,0,'purple'],[3,1,0,'purple'],[3,2,0,'purple'],[3,3,0,'purple'],[3,4,0,'purple'],[-4,5,0,'purple'],[-3,5,0,'purple'],[-2,5,0,'purple'],[-1,5,0,'purple'],[0,5,0,'purple'],[1,5,0,'purple'],[2,5,0,'purple'],[3,5,0,'purple'],[-4,6,-1,'purple'],[-3,6,-1,'purple'],[-2,6,-1,'purple'],[-1,6,-1,'purple'],[0,6,-1,'purple'],[1,6,-1,'purple'],[2,6,-1,'purple'],[3,6,-1,'purple'],[-4,7,-2,'purple'],[-3,7,-2,'purple'],[-2,7,-2,'purple'],[-1,7,-2,'purple'],[0,7,-2,'purple'],[1,7,-2,'purple'],[2,7,-2,'purple'],[3,7,-2,'purple'],[-4,8,-3,'purple'],[-3,8,-3,'purple'],[-2,8,-3,'purple'],[-1,8,-3,'purple'],[0,8,-3,'purple'],[1,8,-3,'purple'],[2,8,-3,'purple'],[3,8,-3,'purple'],[-4,9,-4,'purple'],[-3,9,-4,'purple'],[-2,9,-4,'purple'],[-1,9,-4,'purple'],[0,9,-4,'purple'],[1,9,-4,'purple'],[2,9,-4,'purple'],[3,9,-4,'purple'],[-4,10,-5,'purple'],[-3,10,-5,'purple'],[-2,10,-5,'purple'],[-1,10,-5,'purple'],[0,10,-5,'purple'],[1,10,-5,'purple'],[2,10,-5,'purple'],[3,10,-5,'purple'],[-4,11,-6,'purple'],[-3,11,-6,'purple'],[-2,11,-6,'purple'],[-1,11,-6,'purple'],[0,11,-6,'purple'],[1,11,-6,'purple'],[2,11,-6,'purple'],[3,11,-6,'purple'],[-4,12,-7,'purple'],[-3,12,-7,'purple'],[-2,12,-7,'purple'],[-1,12,-7,'purple'],[0,12,-7,'purple'],[1,12,-7,'purple'],[2,12,-7,'purple'],[3,12,-7,'purple'],[-4,13,-8,'purple'],[-3,13,-8,'purple'],[-2,13,-8,'purple'],[-1,13,-8,'purple'],[0,13,-8,'purple'],[1,13,-8,'purple'],[2,13,-8,'purple'],[3,13,-8,'purple'],[-4,14,-8,'purple'],[-4,15,-8,'purple'],[-4,16,-8,'purple'],[-4,17,-8,'purple'],[-4,18,-8,'purple'],[-4,19,-8,'purple'],[-3,14,-8,'purple'],[-3,15,-8,'purple'],[-3,16,-8,'purple'],[-3,17,-8,'purple'],[-3,18,-8,'purple'],[-3,19,-8,'purple'],[-2,14,-8,'purple'],[-2,15,-8,'purple'],[-2,16,-8,'purple'],[-2,17,-8,'purple'],[-2,18,-8,'purple'],[-2,19,-8,'purple'],[-1,14,-8,'purple'],[-1,15,-8,'purple'],[-1,16,-8,'purple'],[-1,17,-8,'purple'],[-1,18,-8,'purple'],[-1,19,-8,'purple'],[0,14,-8,'purple'],[0,15,-8,'purple'],[0,16,-8,'purple'],[0,17,-8,'purple'],[0,18,-8,'purple'],[0,19,-8,'purple'],[1,14,-8,'purple'],[1,15,-8,'purple'],[1,16,-8,'purple'],[1,17,-8,'purple'],[1,18,-8,'purple'],[1,19,-8,'purple'],[2,14,-8,'purple'],[2,15,-8,'purple'],[2,16,-8,'purple'],[2,17,-8,'purple'],[2,18,-8,'purple'],[2,19,-8,'purple'],[3,14,-8,'purple'],[3,15,-8,'purple'],[3,16,-8,'purple'],[3,17,-8,'purple'],[3,18,-8,'purple'],[3,19,-8,'purple'],[-2,16,-8,'wave'],[-1,16,-8,'wave'],[0,16,-8,'wave'],[1,16,-8,'wave'],[-1,20,-8,'purple'],[-1,21,-8,'purple'],[-1,22,-8,'purple'],[-1,23,-8,'purple'],[-1,24,-8,'purple'],[-1,25,-8,'purple'],[-1,26,-8,'purple'],[-1,27,-8,'purple'],[-1,28,-8,'purple'],[-1,29,-8,'purple'],[-1,30,-8,'purple'],[0,20,-8,'purple'],[0,21,-8,'purple'],[0,22,-8,'purple'],[0,23,-8,'purple'],[0,24,-8,'purple'],[0,25,-8,'purple'],[0,26,-8,'purple'],[0,27,-8,'purple'],[0,28,-8,'purple'],[0,29,-8,'purple'],[0,30,-8,'purple'],[-4,31,-8,'purple'],[-3,31,-8,'purple'],[-2,31,-8,'purple'],[-1,31,-8,'purple'],[0,31,-8,'purple'],[-4,32,-8,'purple'],[-4,33,-8,'purple'],[-4,34,-8,'purple'],[-4,35,-8,'purple'],[-4,36,-8,'purple'],[-4,37,-8,'purple'],[-4,38,-8,'purple'],[-4,39,-8,'purple'],[-4,40,-8,'purple'],[-4,41,-8,'purple'],[-4,42,-8,'purple'],[-3,32,-8,'purple'],[-3,33,-8,'purple'],[-3,34,-8,'purple'],[-3,35,-8,'purple'],[-3,36,-8,'purple'],[-3,37,-8,'purple'],[-3,38,-8,'purple'],[-3,39,-8,'purple'],[-3,40,-8,'purple'],[-3,41,-8,'purple'],[-3,42,-8,'purple'],[-4,43,-8,'purple'],[-4,44,-8,'purple'],[-4,45,-8,'purple'],[-4,46,-8,'purple'],[-4,47,-8,'purple'],[-3,43,-8,'purple'],[-3,44,-8,'purple'],[-3,45,-8,'purple'],[-3,46,-8,'purple'],[-3,47,-8,'purple'],[-2,43,-8,'purple'],[-2,44,-8,'purple'],[-2,45,-8,'purple'],[-2,46,-8,'purple'],[-2,47,-8,'purple'],[-1,43,-8,'purple'],[-1,44,-8,'purple'],[-1,45,-8,'purple'],[-1,46,-8,'purple'],[-1,47,-8,'purple'],[0,43,-8,'purple'],[0,44,-8,'purple'],[0,45,-8,'purple'],[0,46,-8,'purple'],[0,47,-8,'purple'],[1,43,-8,'purple'],[1,44,-8,'purple'],[1,45,-8,'purple'],[1,46,-8,'purple'],[1,47,-8,'purple'],[2,43,-8,'purple'],[2,44,-8,'purple'],[2,45,-8,'purple'],[2,46,-8,'purple'],[2,47,-8,'purple'],[3,43,-8,'purple'],[3,44,-8,'purple'],[3,45,-8,'purple'],[3,46,-8,'purple'],[3,47,-8,'purple'],[-4,48,-8,'purple'],[-3,48,-8,'purple'],[-2,48,-8,'purple'],[-1,48,-8,'purple'],[0,48,-8,'purple'],[1,48,-8,'purple'],[2,48,-8,'purple'],[3,48,-8,'purple'],[-4,49,-9,'purple'],[-3,49,-9,'purple'],[-2,49,-9,'purple'],[-1,49,-9,'purple'],[0,49,-9,'purple'],[1,49,-9,'purple'],[2,49,-9,'purple'],[3,49,-9,'purple'],[-4,50,-10,'purple'],[-3,50,-10,'purple'],[-2,50,-10,'purple'],[-1,50,-10,'purple'],[0,50,-10,'purple'],[1,50,-10,'purple'],[2,50,-10,'purple'],[3,50,-10,'purple'],[-4,51,-11,'purple'],[-3,51,-11,'purple'],[-2,51,-11,'purple'],[-1,51,-11,'purple'],[0,51,-11,'purple'],[1,51,-11,'purple'],[2,51,-11,'purple'],[3,51,-11,'purple'],[-4,52,-12,'purple'],[-3,52,-12,'purple'],[-2,52,-12,'purple'],[-1,52,-12,'purple'],[0,52,-12,'purple'],[1,52,-12,'purple'],[2,52,-12,'purple'],[3,52,-12,'purple'],[-4,53,-13,'purple'],[-4,54,-13,'purple'],[-4,55,-13,'purple'],[-4,56,-13,'purple'],[-4,57,-13,'purple'],[-4,58,-13,'purple'],[-3,53,-13,'purple'],[-3,54,-13,'purple'],[-3,55,-13,'purple'],[-3,56,-13,'purple'],[-3,57,-13,'purple'],[-3,58,-13,'purple'],[-2,53,-13,'purple'],[-2,54,-13,'purple'],[-2,55,-13,'purple'],[-2,56,-13,'purple'],[-2,57,-13,'purple'],[-2,58,-13,'purple'],[-1,53,-13,'purple'],[-1,54,-13,'purple'],[-1,55,-13,'purple'],[-1,56,-13,'purple'],[-1,57,-13,'purple'],[-1,58,-13,'purple'],[0,53,-13,'purple'],[0,54,-13,'purple'],[0,55,-13,'purple'],[0,56,-13,'purple'],[0,57,-13,'purple'],[0,58,-13,'purple'],[1,53,-13,'purple'],[1,54,-13,'purple'],[1,55,-13,'purple'],[1,56,-13,'purple'],[1,57,-13,'purple'],[1,58,-13,'purple'],[2,53,-13,'purple'],[2,54,-13,'purple'],[2,55,-13,'purple'],[2,56,-13,'purple'],[2,57,-13,'purple'],[2,58,-13,'purple'],[3,53,-13,'purple'],[3,54,-13,'purple'],[3,55,-13,'purple'],[3,56,-13,'purple'],[3,57,-13,'purple'],[3,58,-13,'purple'],[0,56,-13,'chute_in'],[2,59,-13,'purple'],[2,60,-13,'purple'],[2,61,-13,'purple'],[2,62,-13,'purple'],[2,63,-13,'purple'],[2,64,-13,'purple'],[2,65,-13,'purple'],[2,66,-13,'purple'],[3,59,-13,'purple'],[3,60,-13,'purple'],[3,61,-13,'purple'],[3,62,-13,'purple'],[3,63,-13,'purple'],[3,64,-13,'purple'],[3,65,-13,'purple'],[3,66,-13,'purple'],[-4,67,-13,'purple'],[-3,67,-13,'purple'],[-2,67,-13,'purple'],[-1,67,-13,'purple'],[0,67,-13,'purple'],[1,67,-13,'purple'],[2,67,-13,'purple'],[3,67,-13,'purple'],[-4,68,-13,'purple'],[-4,69,-13,'purple'],[-4,70,-13,'purple'],[-4,71,-13,'purple'],[-4,72,-13,'purple'],[-4,73,-13,'purple'],[-4,74,-13,'purple'],[-4,75,-13,'purple'],[-3,68,-13,'purple'],[-3,69,-13,'purple'],[-3,70,-13,'purple'],[-3,71,-13,'purple'],[-3,72,-13,'purple'],[-3,73,-13,'purple'],[-3,74,-13,'purple'],[-3,75,-13,'purple'],[-4,76,-13,'purple'],[-3,76,-13,'purple'],[-2,76,-13,'purple'],[-1,76,-13,'purple'],[0,76,-13,'purple'],[1,76,-13,'purple'],[2,76,-13,'purple'],[3,76,-13,'purple'],[-4,77,-14,'purple'],[-3,77,-14,'purple'],[-2,77,-14,'purple'],[-1,77,-14,'purple'],[0,77,-14,'purple'],[1,77,-14,'purple'],[2,77,-14,'purple'],[3,77,-14,'purple'],[-4,78,-15,'purple'],[-3,78,-15,'purple'],[-2,78,-15,'purple'],[-1,78,-15,'purple'],[0,78,-15,'purple'],[1,78,-15,'purple'],[2,78,-15,'purple'],[3,78,-15,'purple'],[-4,79,-16,'purple'],[-3,79,-16,'purple'],[-2,79,-16,'purple'],[-1,79,-16,'purple'],[0,79,-16,'purple'],[1,79,-16,'purple'],[2,79,-16,'purple'],[3,79,-16,'purple'],[-4,80,-17,'purple'],[-3,80,-17,'purple'],[-2,80,-17,'purple'],[-1,80,-17,'purple'],[0,80,-17,'purple'],[1,80,-17,'purple'],[2,80,-17,'purple'],[3,80,-17,'purple'],[-4,81,-18,'purple'],[-4,82,-18,'purple'],[-4,83,-18,'purple'],[-4,84,-18,'purple'],[-4,85,-18,'purple'],[-4,86,-18,'purple'],[-3,81,-18,'purple'],[-3,82,-18,'purple'],[-3,83,-18,'purple'],[-3,84,-18,'purple'],[-3,85,-18,'purple'],[-3,86,-18,'purple'],[-2,81,-18,'purple'],[-2,82,-18,'purple'],[-2,83,-18,'purple'],[-2,84,-18,'purple'],[-2,85,-18,'purple'],[-2,86,-18,'purple'],[-1,81,-18,'purple'],[-1,82,-18,'purple'],[-1,83,-18,'purple'],[-1,84,-18,'purple'],[-1,85,-18,'purple'],[-1,86,-18,'purple'],[0,81,-18,'purple'],[0,82,-18,'purple'],[0,83,-18,'purple'],[0,84,-18,'purple'],[0,85,-18,'purple'],[0,86,-18,'purple'],[1,81,-18,'purple'],[1,82,-18,'purple'],[1,83,-18,'purple'],[1,84,-18,'purple'],[1,85,-18,'purple'],[1,86,-18,'purple'],[2,81,-18,'purple'],[2,82,-18,'purple'],[2,83,-18,'purple'],[2,84,-18,'purple'],[2,85,-18,'purple'],[2,86,-18,'purple'],[3,81,-18,'purple'],[3,82,-18,'purple'],[3,83,-18,'purple'],[3,84,-18,'purple'],[3,85,-18,'purple'],[3,86,-18,'purple'],[0,83,-18,'chute_out'],[0,87,-18,'purple'],[0,88,-18,'purple'],[0,89,-18,'purple'],[0,90,-18,'purple'],[0,91,-18,'purple'],[0,92,-18,'purple'],[0,93,-18,'purple'],[-4,94,-18,'goal'],[-4,95,-18,'goal'],[-4,96,-18,'goal'],[-4,97,-18,'goal'],[-4,98,-18,'goal'],[-3,94,-18,'goal'],[-3,95,-18,'goal'],[-3,96,-18,'goal'],[-3,97,-18,'goal'],[-3,98,-18,'goal'],[-2,94,-18,'goal'],[-2,95,-18,'goal'],[-2,96,-18,'goal'],[-2,97,-18,'goal'],[-2,98,-18,'goal'],[-1,94,-18,'goal'],[-1,95,-18,'goal'],[-1,96,-18,'goal'],[-1,97,-18,'goal'],[-1,98,-18,'goal'],[0,94,-18,'goal'],[0,95,-18,'goal'],[0,96,-18,'goal'],[0,97,-18,'goal'],[0,98,-18,'goal'],[1,94,-18,'goal'],[1,95,-18,'goal'],[1,96,-18,'goal'],[1,97,-18,'goal'],[1,98,-18,'goal'],[2,94,-18,'goal'],[2,95,-18,'goal'],[2,96,-18,'goal'],[2,97,-18,'goal'],[2,98,-18,'goal'],[3,94,-18,'goal'],[3,95,-18,'goal'],[3,96,-18,'goal'],[3,97,-18,'goal'],[3,98,-18,'goal']
+],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:95,gz:-18},
+chutes:[{inX:0,inY:56,outX:0,outY:81,outZ:-18}],
 enemies:[
-  {type:'bruiser',gx:0,gy:18,gz:-8,path:[{gx:-3,gy:14,gz:-8},{gx:3,gy:14,gz:-8}]},
-  {type:'bruiser',gx:0,gy:22,gz:-8,path:[{gx:-3,gy:18,gz:-8},{gx:3,gy:18,gz:-8}]},
-  {type:'bruiser',gx:0,gy:26,gz:-8,path:[{gx:-1,gy:23,gz:-8},{gx:0,gy:36,gz:-8}]},
-  {type:'bruiser',gx:0,gy:30,gz:-8,path:[{gx:-1,gy:23,gz:-8},{gx:0,gy:36,gz:-8}]},
-  {type:'skullhead',gx:0,gy:49,gz:-16,path:[{gx:-3,gy:47,gz:-16},{gx:3,gy:55,gz:-16}]},
-  {type:'bruiser',gx:0,gy:74,gz:-24,path:[{gx:-3,gy:72,gz:-24},{gx:3,gy:78,gz:-24}]},
-  {type:'bruiser',gx:0,gy:81,gz:-24,path:[{gx:0,gy:79,gz:-24},{gx:0,gy:86,gz:-24}]},
-  {type:'bruiser',gx:0,gy:90,gz:-28,path:[{gx:0,gy:87,gz:-25},{gx:0,gy:95,gz:-31}]},
+  {type:'bruiser',gx:0,gy:23,gz:-8,path:[{gx:-1,gy:20,gz:-8},{gx:0,gy:30,gz:-8}]},
+  {type:'bruiser',gx:0,gy:28,gz:-8,path:[{gx:-1,gy:20,gz:-8},{gx:0,gy:30,gz:-8}]},
+  {type:'bruiser',gx:-3,gy:35,gz:-8,path:[{gx:-4,gy:32,gz:-8},{gx:-3,gy:42,gz:-8}]},
+  {type:'skullhead',gx:0,gy:55,gz:-13,path:[{gx:-3,gy:53,gz:-13},{gx:3,gy:57,gz:-13}]},
+  {type:'bruiser',gx:2,gy:62,gz:-13,path:[{gx:2,gy:59,gz:-13},{gx:3,gy:66,gz:-13}]},
+  {type:'bruiser',gx:-3,gy:70,gz:-13,path:[{gx:-4,gy:68,gz:-13},{gx:-3,gy:75,gz:-13}]},
+  {type:'bruiser',gx:0,gy:84,gz:-18,path:[{gx:-3,gy:81,gz:-18},{gx:3,gy:86,gz:-18}]},
+  {type:'bruiser',gx:0,gy:90,gz:-18,path:[{gx:0,gy:87,gz:-18},{gx:0,gy:93,gz:-18}]}
 ]};}
 
-// ── L9: LAVA FIELDS — lava, halfpipes + narrow + conveyors ──────────────────
-// Two huge lava halfpipes, narrow exposed bridges, aggressive bruisers
-// gz: 0 → -8 → -16 → -24 → -30
-function L9(){const T='lava';return{tiles:[
-  ...B(-4,0,0,8,4,T),
-  ...RY(-4,4,0,9,8,T),           // gz 0→-8 steep
-  // Halfpipe gz=-8, depth=5, center gz=-13
-  ...VY(-6,13,-8,22,12,5,T),
-  // Platform gz=-13
-  ...B(-3,35,-13,6,8,T),
-  // Conveyor south on 2-wide path
-  ...[-1,0].map(i=>[i,40,-13,'conveyor_s']),
-  // 2-wide south gz=-13
-  ...B(-1,42,-13,2,8,T),
-  // Ramp gz -13→-20
-  ...RY(-3,50,-13,8,6,T),
-  // Halfpipe gz=-20, depth=5, center gz=-25
-  ...VY(-6,58,-20,22,12,5,T),
-  // Platform gz=-25
-  ...B(-3,80,-25,6,8,T),
-  // Narrow 1-wide with conveyors gz=-25
-  ...C(0,88,-25,10,T),
-  ...[88,90,92,94].map(i=>[0,i,-25,'conveyor_s']),
-  // Ramp gz -25→-32
-  ...RY(-3,98,-25,8,6,T),
-  // Goal gz=-32
-  ...B(-4,106,-32,8,5,'goal'),
-],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:107,gz:-32},
+// ── L9: LAVA FIELDS ─────────────────────────────────────────────────
+function L9(){return{tiles:[
+  [-4,0,0,'lava'],[-4,1,0,'lava'],[-4,2,0,'lava'],[-4,3,0,'lava'],[-4,4,0,'lava'],[-3,0,0,'lava'],[-3,1,0,'lava'],[-3,2,0,'lava'],[-3,3,0,'lava'],[-3,4,0,'lava'],[-2,0,0,'lava'],[-2,1,0,'lava'],[-2,2,0,'lava'],[-2,3,0,'lava'],[-2,4,0,'lava'],[-1,0,0,'lava'],[-1,1,0,'lava'],[-1,2,0,'lava'],[-1,3,0,'lava'],[-1,4,0,'lava'],[0,0,0,'lava'],[0,1,0,'lava'],[0,2,0,'lava'],[0,3,0,'lava'],[0,4,0,'lava'],[1,0,0,'lava'],[1,1,0,'lava'],[1,2,0,'lava'],[1,3,0,'lava'],[1,4,0,'lava'],[2,0,0,'lava'],[2,1,0,'lava'],[2,2,0,'lava'],[2,3,0,'lava'],[2,4,0,'lava'],[3,0,0,'lava'],[3,1,0,'lava'],[3,2,0,'lava'],[3,3,0,'lava'],[3,4,0,'lava'],[-4,5,0,'lava'],[-3,5,0,'lava'],[-2,5,0,'lava'],[-1,5,0,'lava'],[0,5,0,'lava'],[1,5,0,'lava'],[2,5,0,'lava'],[3,5,0,'lava'],[-4,6,-1,'lava'],[-3,6,-1,'lava'],[-2,6,-1,'lava'],[-1,6,-1,'lava'],[0,6,-1,'lava'],[1,6,-1,'lava'],[2,6,-1,'lava'],[3,6,-1,'lava'],[-4,7,-2,'lava'],[-3,7,-2,'lava'],[-2,7,-2,'lava'],[-1,7,-2,'lava'],[0,7,-2,'lava'],[1,7,-2,'lava'],[2,7,-2,'lava'],[3,7,-2,'lava'],[-4,8,-3,'lava'],[-3,8,-3,'lava'],[-2,8,-3,'lava'],[-1,8,-3,'lava'],[0,8,-3,'lava'],[1,8,-3,'lava'],[2,8,-3,'lava'],[3,8,-3,'lava'],[-4,9,-4,'lava'],[-3,9,-4,'lava'],[-2,9,-4,'lava'],[-1,9,-4,'lava'],[0,9,-4,'lava'],[1,9,-4,'lava'],[2,9,-4,'lava'],[3,9,-4,'lava'],[-4,10,-5,'lava'],[-3,10,-5,'lava'],[-2,10,-5,'lava'],[-1,10,-5,'lava'],[0,10,-5,'lava'],[1,10,-5,'lava'],[2,10,-5,'lava'],[3,10,-5,'lava'],[-4,11,-6,'lava'],[-3,11,-6,'lava'],[-2,11,-6,'lava'],[-1,11,-6,'lava'],[0,11,-6,'lava'],[1,11,-6,'lava'],[2,11,-6,'lava'],[3,11,-6,'lava'],[-4,12,-7,'lava'],[-3,12,-7,'lava'],[-2,12,-7,'lava'],[-1,12,-7,'lava'],[0,12,-7,'lava'],[1,12,-7,'lava'],[2,12,-7,'lava'],[3,12,-7,'lava'],[-4,13,-8,'lava'],[-3,13,-8,'lava'],[-2,13,-8,'lava'],[-1,13,-8,'lava'],[0,13,-8,'lava'],[1,13,-8,'lava'],[2,13,-8,'lava'],[3,13,-8,'lava'],[-7,14,-8,'lava'],[-6,14,-9,'lava'],[-5,14,-10,'lava'],[-4,14,-11,'lava'],[-3,14,-11,'lava'],[-2,14,-12,'lava'],[-1,14,-12,'lava'],[0,14,-12,'lava'],[1,14,-12,'lava'],[2,14,-11,'lava'],[3,14,-11,'lava'],[4,14,-10,'lava'],[5,14,-9,'lava'],[6,14,-8,'lava'],[-7,15,-8,'lava'],[-6,15,-9,'lava'],[-5,15,-10,'lava'],[-4,15,-11,'lava'],[-3,15,-11,'lava'],[-2,15,-12,'lava'],[-1,15,-12,'lava'],[0,15,-12,'lava'],[1,15,-12,'lava'],[2,15,-11,'lava'],[3,15,-11,'lava'],[4,15,-10,'lava'],[5,15,-9,'lava'],[6,15,-8,'lava'],[-7,16,-8,'lava'],[-6,16,-9,'lava'],[-5,16,-10,'lava'],[-4,16,-11,'lava'],[-3,16,-11,'lava'],[-2,16,-12,'lava'],[-1,16,-12,'lava'],[0,16,-12,'lava'],[1,16,-12,'lava'],[2,16,-11,'lava'],[3,16,-11,'lava'],[4,16,-10,'lava'],[5,16,-9,'lava'],[6,16,-8,'lava'],[-7,17,-8,'lava'],[-6,17,-9,'lava'],[-5,17,-10,'lava'],[-4,17,-11,'lava'],[-3,17,-11,'lava'],[-2,17,-12,'lava'],[-1,17,-12,'lava'],[0,17,-12,'lava'],[1,17,-12,'lava'],[2,17,-11,'lava'],[3,17,-11,'lava'],[4,17,-10,'lava'],[5,17,-9,'lava'],[6,17,-8,'lava'],[-7,18,-8,'lava'],[-6,18,-9,'lava'],[-5,18,-10,'lava'],[-4,18,-11,'lava'],[-3,18,-11,'lava'],[-2,18,-12,'lava'],[-1,18,-12,'lava'],[0,18,-12,'lava'],[1,18,-12,'lava'],[2,18,-11,'lava'],[3,18,-11,'lava'],[4,18,-10,'lava'],[5,18,-9,'lava'],[6,18,-8,'lava'],[-7,19,-8,'lava'],[-6,19,-9,'lava'],[-5,19,-10,'lava'],[-4,19,-11,'lava'],[-3,19,-11,'lava'],[-2,19,-12,'lava'],[-1,19,-12,'lava'],[0,19,-12,'lava'],[1,19,-12,'lava'],[2,19,-11,'lava'],[3,19,-11,'lava'],[4,19,-10,'lava'],[5,19,-9,'lava'],[6,19,-8,'lava'],[-7,20,-8,'lava'],[-6,20,-9,'lava'],[-5,20,-10,'lava'],[-4,20,-11,'lava'],[-3,20,-11,'lava'],[-2,20,-12,'lava'],[-1,20,-12,'lava'],[0,20,-12,'lava'],[1,20,-12,'lava'],[2,20,-11,'lava'],[3,20,-11,'lava'],[4,20,-10,'lava'],[5,20,-9,'lava'],[6,20,-8,'lava'],[-7,21,-8,'lava'],[-6,21,-9,'lava'],[-5,21,-10,'lava'],[-4,21,-11,'lava'],[-3,21,-11,'lava'],[-2,21,-12,'lava'],[-1,21,-12,'lava'],[0,21,-12,'lava'],[1,21,-12,'lava'],[2,21,-11,'lava'],[3,21,-11,'lava'],[4,21,-10,'lava'],[5,21,-9,'lava'],[6,21,-8,'lava'],[-7,22,-8,'lava'],[-6,22,-9,'lava'],[-5,22,-10,'lava'],[-4,22,-11,'lava'],[-3,22,-11,'lava'],[-2,22,-12,'lava'],[-1,22,-12,'lava'],[0,22,-12,'lava'],[1,22,-12,'lava'],[2,22,-11,'lava'],[3,22,-11,'lava'],[4,22,-10,'lava'],[5,22,-9,'lava'],[6,22,-8,'lava'],[-7,23,-8,'lava'],[-6,23,-9,'lava'],[-5,23,-10,'lava'],[-4,23,-11,'lava'],[-3,23,-11,'lava'],[-2,23,-12,'lava'],[-1,23,-12,'lava'],[0,23,-12,'lava'],[1,23,-12,'lava'],[2,23,-11,'lava'],[3,23,-11,'lava'],[4,23,-10,'lava'],[5,23,-9,'lava'],[6,23,-8,'lava'],[-7,24,-8,'lava'],[-6,24,-9,'lava'],[-5,24,-10,'lava'],[-4,24,-11,'lava'],[-3,24,-11,'lava'],[-2,24,-12,'lava'],[-1,24,-12,'lava'],[0,24,-12,'lava'],[1,24,-12,'lava'],[2,24,-11,'lava'],[3,24,-11,'lava'],[4,24,-10,'lava'],[5,24,-9,'lava'],[6,24,-8,'lava'],[-7,25,-8,'lava'],[-6,25,-9,'lava'],[-5,25,-10,'lava'],[-4,25,-11,'lava'],[-3,25,-11,'lava'],[-2,25,-12,'lava'],[-1,25,-12,'lava'],[0,25,-12,'lava'],[1,25,-12,'lava'],[2,25,-11,'lava'],[3,25,-11,'lava'],[4,25,-10,'lava'],[5,25,-9,'lava'],[6,25,-8,'lava'],[-7,26,-8,'lava'],[-6,26,-9,'lava'],[-5,26,-10,'lava'],[-4,26,-11,'lava'],[-3,26,-11,'lava'],[-2,26,-12,'lava'],[-1,26,-12,'lava'],[0,26,-12,'lava'],[1,26,-12,'lava'],[2,26,-11,'lava'],[3,26,-11,'lava'],[4,26,-10,'lava'],[5,26,-9,'lava'],[6,26,-8,'lava'],[-7,27,-8,'lava'],[-6,27,-9,'lava'],[-5,27,-10,'lava'],[-4,27,-11,'lava'],[-3,27,-11,'lava'],[-2,27,-12,'lava'],[-1,27,-12,'lava'],[0,27,-12,'lava'],[1,27,-12,'lava'],[2,27,-11,'lava'],[3,27,-11,'lava'],[4,27,-10,'lava'],[5,27,-9,'lava'],[6,27,-8,'lava'],[-7,28,-8,'lava'],[-6,28,-9,'lava'],[-5,28,-10,'lava'],[-4,28,-11,'lava'],[-3,28,-11,'lava'],[-2,28,-12,'lava'],[-1,28,-12,'lava'],[0,28,-12,'lava'],[1,28,-12,'lava'],[2,28,-11,'lava'],[3,28,-11,'lava'],[4,28,-10,'lava'],[5,28,-9,'lava'],[6,28,-8,'lava'],[-7,29,-8,'lava'],[-6,29,-9,'lava'],[-5,29,-10,'lava'],[-4,29,-11,'lava'],[-3,29,-11,'lava'],[-2,29,-12,'lava'],[-1,29,-12,'lava'],[0,29,-12,'lava'],[1,29,-12,'lava'],[2,29,-11,'lava'],[3,29,-11,'lava'],[4,29,-10,'lava'],[5,29,-9,'lava'],[6,29,-8,'lava'],[-7,30,-8,'lava'],[-6,30,-9,'lava'],[-5,30,-10,'lava'],[-4,30,-11,'lava'],[-3,30,-11,'lava'],[-2,30,-12,'lava'],[-1,30,-12,'lava'],[0,30,-12,'lava'],[1,30,-12,'lava'],[2,30,-11,'lava'],[3,30,-11,'lava'],[4,30,-10,'lava'],[5,30,-9,'lava'],[6,30,-8,'lava'],[-7,31,-8,'lava'],[-6,31,-9,'lava'],[-5,31,-10,'lava'],[-4,31,-11,'lava'],[-3,31,-11,'lava'],[-2,31,-12,'lava'],[-1,31,-12,'lava'],[0,31,-12,'lava'],[1,31,-12,'lava'],[2,31,-11,'lava'],[3,31,-11,'lava'],[4,31,-10,'lava'],[5,31,-9,'lava'],[6,31,-8,'lava'],[-4,32,-12,'lava'],[-4,33,-12,'lava'],[-4,34,-12,'lava'],[-4,35,-12,'lava'],[-4,36,-12,'lava'],[-4,37,-12,'lava'],[-3,32,-12,'lava'],[-3,33,-12,'lava'],[-3,34,-12,'lava'],[-3,35,-12,'lava'],[-3,36,-12,'lava'],[-3,37,-12,'lava'],[-2,32,-12,'lava'],[-2,33,-12,'lava'],[-2,34,-12,'lava'],[-2,35,-12,'lava'],[-2,36,-12,'lava'],[-2,37,-12,'lava'],[-1,32,-12,'lava'],[-1,33,-12,'lava'],[-1,34,-12,'lava'],[-1,35,-12,'lava'],[-1,36,-12,'lava'],[-1,37,-12,'lava'],[0,32,-12,'lava'],[0,33,-12,'lava'],[0,34,-12,'lava'],[0,35,-12,'lava'],[0,36,-12,'lava'],[0,37,-12,'lava'],[1,32,-12,'lava'],[1,33,-12,'lava'],[1,34,-12,'lava'],[1,35,-12,'lava'],[1,36,-12,'lava'],[1,37,-12,'lava'],[2,32,-12,'lava'],[2,33,-12,'lava'],[2,34,-12,'lava'],[2,35,-12,'lava'],[2,36,-12,'lava'],[2,37,-12,'lava'],[3,32,-12,'lava'],[3,33,-12,'lava'],[3,34,-12,'lava'],[3,35,-12,'lava'],[3,36,-12,'lava'],[3,37,-12,'lava'],[2,38,-12,'lava'],[2,39,-12,'lava'],[2,40,-12,'lava'],[2,41,-12,'lava'],[2,42,-12,'lava'],[2,43,-12,'lava'],[2,44,-12,'lava'],[2,45,-12,'lava'],[2,46,-12,'lava'],[3,38,-12,'lava'],[3,39,-12,'lava'],[3,40,-12,'lava'],[3,41,-12,'lava'],[3,42,-12,'lava'],[3,43,-12,'lava'],[3,44,-12,'lava'],[3,45,-12,'lava'],[3,46,-12,'lava'],[-4,47,-12,'lava'],[-3,47,-12,'lava'],[-2,47,-12,'lava'],[-1,47,-12,'lava'],[0,47,-12,'lava'],[1,47,-12,'lava'],[2,47,-12,'lava'],[-4,48,-12,'lava'],[-4,49,-12,'lava'],[-4,50,-12,'lava'],[-4,51,-12,'lava'],[-4,52,-12,'lava'],[-4,53,-12,'lava'],[-4,54,-12,'lava'],[-4,55,-12,'lava'],[-4,56,-12,'lava'],[-3,48,-12,'lava'],[-3,49,-12,'lava'],[-3,50,-12,'lava'],[-3,51,-12,'lava'],[-3,52,-12,'lava'],[-3,53,-12,'lava'],[-3,54,-12,'lava'],[-3,55,-12,'lava'],[-3,56,-12,'lava'],[-4,57,-12,'lava'],[-3,57,-12,'lava'],[-2,57,-12,'lava'],[-1,57,-12,'lava'],[0,57,-12,'lava'],[1,57,-12,'lava'],[2,57,-12,'lava'],[3,57,-12,'lava'],[-4,58,-12,'lava'],[-3,58,-12,'lava'],[-2,58,-12,'lava'],[-1,58,-12,'lava'],[0,58,-12,'lava'],[1,58,-12,'lava'],[2,58,-12,'lava'],[3,58,-12,'lava'],[-4,59,-13,'lava'],[-3,59,-13,'lava'],[-2,59,-13,'lava'],[-1,59,-13,'lava'],[0,59,-13,'lava'],[1,59,-13,'lava'],[2,59,-13,'lava'],[3,59,-13,'lava'],[-4,60,-14,'lava'],[-3,60,-14,'lava'],[-2,60,-14,'lava'],[-1,60,-14,'lava'],[0,60,-14,'lava'],[1,60,-14,'lava'],[2,60,-14,'lava'],[3,60,-14,'lava'],[-4,61,-15,'lava'],[-3,61,-15,'lava'],[-2,61,-15,'lava'],[-1,61,-15,'lava'],[0,61,-15,'lava'],[1,61,-15,'lava'],[2,61,-15,'lava'],[3,61,-15,'lava'],[-4,62,-16,'lava'],[-3,62,-16,'lava'],[-2,62,-16,'lava'],[-1,62,-16,'lava'],[0,62,-16,'lava'],[1,62,-16,'lava'],[2,62,-16,'lava'],[3,62,-16,'lava'],[-7,63,-17,'lava'],[-6,63,-18,'lava'],[-5,63,-19,'lava'],[-4,63,-20,'lava'],[-3,63,-20,'lava'],[-2,63,-21,'lava'],[-1,63,-21,'lava'],[0,63,-21,'lava'],[1,63,-21,'lava'],[2,63,-20,'lava'],[3,63,-20,'lava'],[4,63,-19,'lava'],[5,63,-18,'lava'],[6,63,-17,'lava'],[-7,64,-17,'lava'],[-6,64,-18,'lava'],[-5,64,-19,'lava'],[-4,64,-20,'lava'],[-3,64,-20,'lava'],[-2,64,-21,'lava'],[-1,64,-21,'lava'],[0,64,-21,'lava'],[1,64,-21,'lava'],[2,64,-20,'lava'],[3,64,-20,'lava'],[4,64,-19,'lava'],[5,64,-18,'lava'],[6,64,-17,'lava'],[-7,65,-17,'lava'],[-6,65,-18,'lava'],[-5,65,-19,'lava'],[-4,65,-20,'lava'],[-3,65,-20,'lava'],[-2,65,-21,'lava'],[-1,65,-21,'lava'],[0,65,-21,'lava'],[1,65,-21,'lava'],[2,65,-20,'lava'],[3,65,-20,'lava'],[4,65,-19,'lava'],[5,65,-18,'lava'],[6,65,-17,'lava'],[-7,66,-17,'lava'],[-6,66,-18,'lava'],[-5,66,-19,'lava'],[-4,66,-20,'lava'],[-3,66,-20,'lava'],[-2,66,-21,'lava'],[-1,66,-21,'lava'],[0,66,-21,'lava'],[1,66,-21,'lava'],[2,66,-20,'lava'],[3,66,-20,'lava'],[4,66,-19,'lava'],[5,66,-18,'lava'],[6,66,-17,'lava'],[-7,67,-17,'lava'],[-6,67,-18,'lava'],[-5,67,-19,'lava'],[-4,67,-20,'lava'],[-3,67,-20,'lava'],[-2,67,-21,'lava'],[-1,67,-21,'lava'],[0,67,-21,'lava'],[1,67,-21,'lava'],[2,67,-20,'lava'],[3,67,-20,'lava'],[4,67,-19,'lava'],[5,67,-18,'lava'],[6,67,-17,'lava'],[-7,68,-17,'lava'],[-6,68,-18,'lava'],[-5,68,-19,'lava'],[-4,68,-20,'lava'],[-3,68,-20,'lava'],[-2,68,-21,'lava'],[-1,68,-21,'lava'],[0,68,-21,'lava'],[1,68,-21,'lava'],[2,68,-20,'lava'],[3,68,-20,'lava'],[4,68,-19,'lava'],[5,68,-18,'lava'],[6,68,-17,'lava'],[-7,69,-17,'lava'],[-6,69,-18,'lava'],[-5,69,-19,'lava'],[-4,69,-20,'lava'],[-3,69,-20,'lava'],[-2,69,-21,'lava'],[-1,69,-21,'lava'],[0,69,-21,'lava'],[1,69,-21,'lava'],[2,69,-20,'lava'],[3,69,-20,'lava'],[4,69,-19,'lava'],[5,69,-18,'lava'],[6,69,-17,'lava'],[-7,70,-17,'lava'],[-6,70,-18,'lava'],[-5,70,-19,'lava'],[-4,70,-20,'lava'],[-3,70,-20,'lava'],[-2,70,-21,'lava'],[-1,70,-21,'lava'],[0,70,-21,'lava'],[1,70,-21,'lava'],[2,70,-20,'lava'],[3,70,-20,'lava'],[4,70,-19,'lava'],[5,70,-18,'lava'],[6,70,-17,'lava'],[-7,71,-17,'lava'],[-6,71,-18,'lava'],[-5,71,-19,'lava'],[-4,71,-20,'lava'],[-3,71,-20,'lava'],[-2,71,-21,'lava'],[-1,71,-21,'lava'],[0,71,-21,'lava'],[1,71,-21,'lava'],[2,71,-20,'lava'],[3,71,-20,'lava'],[4,71,-19,'lava'],[5,71,-18,'lava'],[6,71,-17,'lava'],[-7,72,-17,'lava'],[-6,72,-18,'lava'],[-5,72,-19,'lava'],[-4,72,-20,'lava'],[-3,72,-20,'lava'],[-2,72,-21,'lava'],[-1,72,-21,'lava'],[0,72,-21,'lava'],[1,72,-21,'lava'],[2,72,-20,'lava'],[3,72,-20,'lava'],[4,72,-19,'lava'],[5,72,-18,'lava'],[6,72,-17,'lava'],[-7,73,-17,'lava'],[-6,73,-18,'lava'],[-5,73,-19,'lava'],[-4,73,-20,'lava'],[-3,73,-20,'lava'],[-2,73,-21,'lava'],[-1,73,-21,'lava'],[0,73,-21,'lava'],[1,73,-21,'lava'],[2,73,-20,'lava'],[3,73,-20,'lava'],[4,73,-19,'lava'],[5,73,-18,'lava'],[6,73,-17,'lava'],[-7,74,-17,'lava'],[-6,74,-18,'lava'],[-5,74,-19,'lava'],[-4,74,-20,'lava'],[-3,74,-20,'lava'],[-2,74,-21,'lava'],[-1,74,-21,'lava'],[0,74,-21,'lava'],[1,74,-21,'lava'],[2,74,-20,'lava'],[3,74,-20,'lava'],[4,74,-19,'lava'],[5,74,-18,'lava'],[6,74,-17,'lava'],[-7,75,-17,'lava'],[-6,75,-18,'lava'],[-5,75,-19,'lava'],[-4,75,-20,'lava'],[-3,75,-20,'lava'],[-2,75,-21,'lava'],[-1,75,-21,'lava'],[0,75,-21,'lava'],[1,75,-21,'lava'],[2,75,-20,'lava'],[3,75,-20,'lava'],[4,75,-19,'lava'],[5,75,-18,'lava'],[6,75,-17,'lava'],[-7,76,-17,'lava'],[-6,76,-18,'lava'],[-5,76,-19,'lava'],[-4,76,-20,'lava'],[-3,76,-20,'lava'],[-2,76,-21,'lava'],[-1,76,-21,'lava'],[0,76,-21,'lava'],[1,76,-21,'lava'],[2,76,-20,'lava'],[3,76,-20,'lava'],[4,76,-19,'lava'],[5,76,-18,'lava'],[6,76,-17,'lava'],[-7,77,-17,'lava'],[-6,77,-18,'lava'],[-5,77,-19,'lava'],[-4,77,-20,'lava'],[-3,77,-20,'lava'],[-2,77,-21,'lava'],[-1,77,-21,'lava'],[0,77,-21,'lava'],[1,77,-21,'lava'],[2,77,-20,'lava'],[3,77,-20,'lava'],[4,77,-19,'lava'],[5,77,-18,'lava'],[6,77,-17,'lava'],[-7,78,-17,'lava'],[-6,78,-18,'lava'],[-5,78,-19,'lava'],[-4,78,-20,'lava'],[-3,78,-20,'lava'],[-2,78,-21,'lava'],[-1,78,-21,'lava'],[0,78,-21,'lava'],[1,78,-21,'lava'],[2,78,-20,'lava'],[3,78,-20,'lava'],[4,78,-19,'lava'],[5,78,-18,'lava'],[6,78,-17,'lava'],[-7,79,-17,'lava'],[-6,79,-18,'lava'],[-5,79,-19,'lava'],[-4,79,-20,'lava'],[-3,79,-20,'lava'],[-2,79,-21,'lava'],[-1,79,-21,'lava'],[0,79,-21,'lava'],[1,79,-21,'lava'],[2,79,-20,'lava'],[3,79,-20,'lava'],[4,79,-19,'lava'],[5,79,-18,'lava'],[6,79,-17,'lava'],[-7,80,-17,'lava'],[-6,80,-18,'lava'],[-5,80,-19,'lava'],[-4,80,-20,'lava'],[-3,80,-20,'lava'],[-2,80,-21,'lava'],[-1,80,-21,'lava'],[0,80,-21,'lava'],[1,80,-21,'lava'],[2,80,-20,'lava'],[3,80,-20,'lava'],[4,80,-19,'lava'],[5,80,-18,'lava'],[6,80,-17,'lava'],[-4,81,-21,'lava'],[-4,82,-21,'lava'],[-4,83,-21,'lava'],[-4,84,-21,'lava'],[-4,85,-21,'lava'],[-4,86,-21,'lava'],[-3,81,-21,'lava'],[-3,82,-21,'lava'],[-3,83,-21,'lava'],[-3,84,-21,'lava'],[-3,85,-21,'lava'],[-3,86,-21,'lava'],[-2,81,-21,'lava'],[-2,82,-21,'lava'],[-2,83,-21,'lava'],[-2,84,-21,'lava'],[-2,85,-21,'lava'],[-2,86,-21,'lava'],[-1,81,-21,'lava'],[-1,82,-21,'lava'],[-1,83,-21,'lava'],[-1,84,-21,'lava'],[-1,85,-21,'lava'],[-1,86,-21,'lava'],[0,81,-21,'lava'],[0,82,-21,'lava'],[0,83,-21,'lava'],[0,84,-21,'lava'],[0,85,-21,'lava'],[0,86,-21,'lava'],[1,81,-21,'lava'],[1,82,-21,'lava'],[1,83,-21,'lava'],[1,84,-21,'lava'],[1,85,-21,'lava'],[1,86,-21,'lava'],[2,81,-21,'lava'],[2,82,-21,'lava'],[2,83,-21,'lava'],[2,84,-21,'lava'],[2,85,-21,'lava'],[2,86,-21,'lava'],[3,81,-21,'lava'],[3,82,-21,'lava'],[3,83,-21,'lava'],[3,84,-21,'lava'],[3,85,-21,'lava'],[3,86,-21,'lava'],[-2,83,-21,'conveyor_s'],[-1,83,-21,'conveyor_s'],[0,83,-21,'conveyor_s'],[1,83,-21,'conveyor_s'],[0,87,-21,'lava'],[0,88,-21,'lava'],[0,89,-21,'lava'],[0,90,-21,'lava'],[0,91,-21,'lava'],[0,92,-21,'lava'],[0,93,-21,'lava'],[0,94,-21,'lava'],[-4,95,-21,'lava'],[-3,95,-21,'lava'],[-2,95,-21,'lava'],[-1,95,-21,'lava'],[0,95,-21,'lava'],[1,95,-21,'lava'],[2,95,-21,'lava'],[3,95,-21,'lava'],[-4,96,-22,'lava'],[-3,96,-22,'lava'],[-2,96,-22,'lava'],[-1,96,-22,'lava'],[0,96,-22,'lava'],[1,96,-22,'lava'],[2,96,-22,'lava'],[3,96,-22,'lava'],[-4,97,-23,'lava'],[-3,97,-23,'lava'],[-2,97,-23,'lava'],[-1,97,-23,'lava'],[0,97,-23,'lava'],[1,97,-23,'lava'],[2,97,-23,'lava'],[3,97,-23,'lava'],[-4,98,-24,'lava'],[-3,98,-24,'lava'],[-2,98,-24,'lava'],[-1,98,-24,'lava'],[0,98,-24,'lava'],[1,98,-24,'lava'],[2,98,-24,'lava'],[3,98,-24,'lava'],[-4,99,-25,'goal'],[-4,100,-25,'goal'],[-4,101,-25,'goal'],[-4,102,-25,'goal'],[-4,103,-25,'goal'],[-3,99,-25,'goal'],[-3,100,-25,'goal'],[-3,101,-25,'goal'],[-3,102,-25,'goal'],[-3,103,-25,'goal'],[-2,99,-25,'goal'],[-2,100,-25,'goal'],[-2,101,-25,'goal'],[-2,102,-25,'goal'],[-2,103,-25,'goal'],[-1,99,-25,'goal'],[-1,100,-25,'goal'],[-1,101,-25,'goal'],[-1,102,-25,'goal'],[-1,103,-25,'goal'],[0,99,-25,'goal'],[0,100,-25,'goal'],[0,101,-25,'goal'],[0,102,-25,'goal'],[0,103,-25,'goal'],[1,99,-25,'goal'],[1,100,-25,'goal'],[1,101,-25,'goal'],[1,102,-25,'goal'],[1,103,-25,'goal'],[2,99,-25,'goal'],[2,100,-25,'goal'],[2,101,-25,'goal'],[2,102,-25,'goal'],[2,103,-25,'goal'],[3,99,-25,'goal'],[3,100,-25,'goal'],[3,101,-25,'goal'],[3,102,-25,'goal'],[3,103,-25,'goal']
+],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:100,gz:-25},
 enemies:[
-  {type:'bruiser',gx:0,gy:7,gz:-4,path:[{gx:-3,gy:6,gz:-4},{gx:3,gy:6,gz:-4}]},
-  {type:'bruiser',gx:0,gy:22,gz:-12,path:[{gx:-5,gy:14,gz:-12},{gx:4,gy:34,gz:-12}]},
-  {type:'bruiser',gx:0,gy:28,gz:-12,path:[{gx:-5,gy:14,gz:-11},{gx:4,gy:34,gz:-11}]},
-  {type:'skullhead',gx:0,gy:38,gz:-13,path:[{gx:-2,gy:36,gz:-13},{gx:2,gy:42,gz:-13}]},
-  {type:'bruiser',gx:-1,gy:44,gz:-13,path:[{gx:-1,gy:42,gz:-13},{gx:0,gy:49,gz:-13}]},
-  {type:'bruiser',gx:0,gy:67,gz:-24,path:[{gx:-5,gy:59,gz:-24},{gx:4,gy:79,gz:-24}]},
-  {type:'bruiser',gx:0,gy:74,gz:-24,path:[{gx:-5,gy:59,gz:-23},{gx:4,gy:79,gz:-23}]},
-  {type:'bruiser',gx:0,gy:83,gz:-25,path:[{gx:-2,gy:81,gz:-25},{gx:2,gy:87,gz:-25}]},
-  {type:'bruiser',gx:0,gy:91,gz:-25,path:[{gx:0,gy:88,gz:-25},{gx:0,gy:97,gz:-25}]},
+  {type:'bruiser',gx:0,gy:8,gz:-4,path:[{gx:-3,gy:6,gz:-4},{gx:3,gy:6,gz:-4}]},
+  {type:'bruiser',gx:0,gy:21,gz:-11,path:[{gx:-6,gy:15,gz:-11},{gx:5,gy:31,gz:-11}]},
+  {type:'bruiser',gx:0,gy:27,gz:-11,path:[{gx:-6,gy:15,gz:-10},{gx:5,gy:31,gz:-10}]},
+  {type:'crab',gx:2,gy:41,gz:-12,path:[{gx:2,gy:38,gz:-12},{gx:3,gy:46,gz:-12}]},
+  {type:'bruiser',gx:0,gy:70,gz:-20,path:[{gx:-6,gy:64,gz:-20},{gx:5,gy:80,gz:-20}]},
+  {type:'bruiser',gx:0,gy:76,gz:-20,path:[{gx:-6,gy:64,gz:-19},{gx:5,gy:80,gz:-19}]},
+  {type:'skullhead',gx:0,gy:85,gz:-21,path:[{gx:-3,gy:83,gz:-21},{gx:3,gy:86,gz:-21}]},
+  {type:'bruiser',gx:0,gy:91,gz:-21,path:[{gx:0,gy:87,gz:-21},{gx:0,gy:97,gz:-21}]}
 ]};}
 
-// ── L10: FINAL CHAOS — all mechanics, brutal difficulty ─────────────────────
-// Everything: halfpipes, wave tiles, conveyors, chutes, 1-wide, brutal bruisers
-// gz: 0 → -10 → -20 → -30 → -40
-function L10(){const T='checker';return{tiles:[
-  ...B(-4,0,0,8,4,T),
-  ...RY(-4,4,0,11,8,T),          // gz 0→-10, very steep
-  // Halfpipe gz=-10, depth=6, center gz=-16
-  ...VY(-6,15,-10,22,12,6,T),
-  // Platform gz=-16
-  ...B(-3,37,-16,6,8,T),
-  // Wave tiles + conveyor mix
-  ...[-2,-1,0,1].map(i=>[i,41,-16,'wave']),
-  ...[-2,-1,0,1].map(i=>[i,43,-16,'conveyor_s']),
-  // 1-wide south gz=-16
-  ...C(0,45,-16,10,T),
-  // Chute in gz=-16 → gz=-26
-  ...[[0,54,-16,'chute_in']],
-  // 1-wide continues for those who skip chute
-  ...C(0,55,-16,8,T),
-  ...RY(-1,63,-16,11,2,T),       // gz -16→-26 narrow ramp
-  // Chute out + platform gz=-26
-  ...B(-4,74,-26,8,8,T),
-  ...[[0,54+20,-26,'chute_out']],
-  // Second halfpipe gz=-26, depth=6, center gz=-32
-  ...VY(-6,82,-26,22,12,6,T),
-  // Platform gz=-32
-  ...B(-3,104,-32,6,8,T),
-  // Final 1-wide gauntlet with conveyors gz=-32
-  ...C(0,112,-32,12,T),
-  ...[112,114,116,118].map(i=>[0,i,-32,'conveyor_s']),
-  // Final steep ramp gz -32→-40
-  ...RY(-1,124,-32,9,2,T),
-  // Goal gz=-40
-  ...B(-4,133,-40,8,5,'goal'),
-],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:134,gz:-40},
-chutes:[{inX:0,inY:54,outX:0,outY:74,outZ:-26}],
+// ── L10: FINAL CHAOS ─────────────────────────────────────────────────
+function L10(){return{tiles:[
+  [-4,0,0,'checker'],[-4,1,0,'checker'],[-4,2,0,'checker'],[-4,3,0,'checker'],[-4,4,0,'checker'],[-3,0,0,'checker'],[-3,1,0,'checker'],[-3,2,0,'checker'],[-3,3,0,'checker'],[-3,4,0,'checker'],[-2,0,0,'checker'],[-2,1,0,'checker'],[-2,2,0,'checker'],[-2,3,0,'checker'],[-2,4,0,'checker'],[-1,0,0,'checker'],[-1,1,0,'checker'],[-1,2,0,'checker'],[-1,3,0,'checker'],[-1,4,0,'checker'],[0,0,0,'checker'],[0,1,0,'checker'],[0,2,0,'checker'],[0,3,0,'checker'],[0,4,0,'checker'],[1,0,0,'checker'],[1,1,0,'checker'],[1,2,0,'checker'],[1,3,0,'checker'],[1,4,0,'checker'],[2,0,0,'checker'],[2,1,0,'checker'],[2,2,0,'checker'],[2,3,0,'checker'],[2,4,0,'checker'],[3,0,0,'checker'],[3,1,0,'checker'],[3,2,0,'checker'],[3,3,0,'checker'],[3,4,0,'checker'],[-4,5,0,'checker'],[-3,5,0,'checker'],[-2,5,0,'checker'],[-1,5,0,'checker'],[0,5,0,'checker'],[1,5,0,'checker'],[2,5,0,'checker'],[3,5,0,'checker'],[-4,6,-1,'checker'],[-3,6,-1,'checker'],[-2,6,-1,'checker'],[-1,6,-1,'checker'],[0,6,-1,'checker'],[1,6,-1,'checker'],[2,6,-1,'checker'],[3,6,-1,'checker'],[-4,7,-2,'checker'],[-3,7,-2,'checker'],[-2,7,-2,'checker'],[-1,7,-2,'checker'],[0,7,-2,'checker'],[1,7,-2,'checker'],[2,7,-2,'checker'],[3,7,-2,'checker'],[-4,8,-3,'checker'],[-3,8,-3,'checker'],[-2,8,-3,'checker'],[-1,8,-3,'checker'],[0,8,-3,'checker'],[1,8,-3,'checker'],[2,8,-3,'checker'],[3,8,-3,'checker'],[-4,9,-4,'checker'],[-3,9,-4,'checker'],[-2,9,-4,'checker'],[-1,9,-4,'checker'],[0,9,-4,'checker'],[1,9,-4,'checker'],[2,9,-4,'checker'],[3,9,-4,'checker'],[-4,10,-5,'checker'],[-3,10,-5,'checker'],[-2,10,-5,'checker'],[-1,10,-5,'checker'],[0,10,-5,'checker'],[1,10,-5,'checker'],[2,10,-5,'checker'],[3,10,-5,'checker'],[-4,11,-6,'checker'],[-3,11,-6,'checker'],[-2,11,-6,'checker'],[-1,11,-6,'checker'],[0,11,-6,'checker'],[1,11,-6,'checker'],[2,11,-6,'checker'],[3,11,-6,'checker'],[-4,12,-7,'checker'],[-3,12,-7,'checker'],[-2,12,-7,'checker'],[-1,12,-7,'checker'],[0,12,-7,'checker'],[1,12,-7,'checker'],[2,12,-7,'checker'],[3,12,-7,'checker'],[-4,13,-8,'checker'],[-3,13,-8,'checker'],[-2,13,-8,'checker'],[-1,13,-8,'checker'],[0,13,-8,'checker'],[1,13,-8,'checker'],[2,13,-8,'checker'],[3,13,-8,'checker'],[-4,14,-9,'checker'],[-3,14,-9,'checker'],[-2,14,-9,'checker'],[-1,14,-9,'checker'],[0,14,-9,'checker'],[1,14,-9,'checker'],[2,14,-9,'checker'],[3,14,-9,'checker'],[-4,15,-10,'checker'],[-3,15,-10,'checker'],[-2,15,-10,'checker'],[-1,15,-10,'checker'],[0,15,-10,'checker'],[1,15,-10,'checker'],[2,15,-10,'checker'],[3,15,-10,'checker'],[-7,16,-10,'checker'],[-6,16,-11,'checker'],[-5,16,-13,'checker'],[-4,16,-14,'checker'],[-3,16,-15,'checker'],[-2,16,-15,'checker'],[-1,16,-16,'checker'],[0,16,-16,'checker'],[1,16,-15,'checker'],[2,16,-15,'checker'],[3,16,-14,'checker'],[4,16,-13,'checker'],[5,16,-11,'checker'],[6,16,-10,'checker'],[-7,17,-10,'checker'],[-6,17,-11,'checker'],[-5,17,-13,'checker'],[-4,17,-14,'checker'],[-3,17,-15,'checker'],[-2,17,-15,'checker'],[-1,17,-16,'checker'],[0,17,-16,'checker'],[1,17,-15,'checker'],[2,17,-15,'checker'],[3,17,-14,'checker'],[4,17,-13,'checker'],[5,17,-11,'checker'],[6,17,-10,'checker'],[-7,18,-10,'checker'],[-6,18,-11,'checker'],[-5,18,-13,'checker'],[-4,18,-14,'checker'],[-3,18,-15,'checker'],[-2,18,-15,'checker'],[-1,18,-16,'checker'],[0,18,-16,'checker'],[1,18,-15,'checker'],[2,18,-15,'checker'],[3,18,-14,'checker'],[4,18,-13,'checker'],[5,18,-11,'checker'],[6,18,-10,'checker'],[-7,19,-10,'checker'],[-6,19,-11,'checker'],[-5,19,-13,'checker'],[-4,19,-14,'checker'],[-3,19,-15,'checker'],[-2,19,-15,'checker'],[-1,19,-16,'checker'],[0,19,-16,'checker'],[1,19,-15,'checker'],[2,19,-15,'checker'],[3,19,-14,'checker'],[4,19,-13,'checker'],[5,19,-11,'checker'],[6,19,-10,'checker'],[-7,20,-10,'checker'],[-6,20,-11,'checker'],[-5,20,-13,'checker'],[-4,20,-14,'checker'],[-3,20,-15,'checker'],[-2,20,-15,'checker'],[-1,20,-16,'checker'],[0,20,-16,'checker'],[1,20,-15,'checker'],[2,20,-15,'checker'],[3,20,-14,'checker'],[4,20,-13,'checker'],[5,20,-11,'checker'],[6,20,-10,'checker'],[-7,21,-10,'checker'],[-6,21,-11,'checker'],[-5,21,-13,'checker'],[-4,21,-14,'checker'],[-3,21,-15,'checker'],[-2,21,-15,'checker'],[-1,21,-16,'checker'],[0,21,-16,'checker'],[1,21,-15,'checker'],[2,21,-15,'checker'],[3,21,-14,'checker'],[4,21,-13,'checker'],[5,21,-11,'checker'],[6,21,-10,'checker'],[-7,22,-10,'checker'],[-6,22,-11,'checker'],[-5,22,-13,'checker'],[-4,22,-14,'checker'],[-3,22,-15,'checker'],[-2,22,-15,'checker'],[-1,22,-16,'checker'],[0,22,-16,'checker'],[1,22,-15,'checker'],[2,22,-15,'checker'],[3,22,-14,'checker'],[4,22,-13,'checker'],[5,22,-11,'checker'],[6,22,-10,'checker'],[-7,23,-10,'checker'],[-6,23,-11,'checker'],[-5,23,-13,'checker'],[-4,23,-14,'checker'],[-3,23,-15,'checker'],[-2,23,-15,'checker'],[-1,23,-16,'checker'],[0,23,-16,'checker'],[1,23,-15,'checker'],[2,23,-15,'checker'],[3,23,-14,'checker'],[4,23,-13,'checker'],[5,23,-11,'checker'],[6,23,-10,'checker'],[-7,24,-10,'checker'],[-6,24,-11,'checker'],[-5,24,-13,'checker'],[-4,24,-14,'checker'],[-3,24,-15,'checker'],[-2,24,-15,'checker'],[-1,24,-16,'checker'],[0,24,-16,'checker'],[1,24,-15,'checker'],[2,24,-15,'checker'],[3,24,-14,'checker'],[4,24,-13,'checker'],[5,24,-11,'checker'],[6,24,-10,'checker'],[-7,25,-10,'checker'],[-6,25,-11,'checker'],[-5,25,-13,'checker'],[-4,25,-14,'checker'],[-3,25,-15,'checker'],[-2,25,-15,'checker'],[-1,25,-16,'checker'],[0,25,-16,'checker'],[1,25,-15,'checker'],[2,25,-15,'checker'],[3,25,-14,'checker'],[4,25,-13,'checker'],[5,25,-11,'checker'],[6,25,-10,'checker'],[-7,26,-10,'checker'],[-6,26,-11,'checker'],[-5,26,-13,'checker'],[-4,26,-14,'checker'],[-3,26,-15,'checker'],[-2,26,-15,'checker'],[-1,26,-16,'checker'],[0,26,-16,'checker'],[1,26,-15,'checker'],[2,26,-15,'checker'],[3,26,-14,'checker'],[4,26,-13,'checker'],[5,26,-11,'checker'],[6,26,-10,'checker'],[-7,27,-10,'checker'],[-6,27,-11,'checker'],[-5,27,-13,'checker'],[-4,27,-14,'checker'],[-3,27,-15,'checker'],[-2,27,-15,'checker'],[-1,27,-16,'checker'],[0,27,-16,'checker'],[1,27,-15,'checker'],[2,27,-15,'checker'],[3,27,-14,'checker'],[4,27,-13,'checker'],[5,27,-11,'checker'],[6,27,-10,'checker'],[-7,28,-10,'checker'],[-6,28,-11,'checker'],[-5,28,-13,'checker'],[-4,28,-14,'checker'],[-3,28,-15,'checker'],[-2,28,-15,'checker'],[-1,28,-16,'checker'],[0,28,-16,'checker'],[1,28,-15,'checker'],[2,28,-15,'checker'],[3,28,-14,'checker'],[4,28,-13,'checker'],[5,28,-11,'checker'],[6,28,-10,'checker'],[-7,29,-10,'checker'],[-6,29,-11,'checker'],[-5,29,-13,'checker'],[-4,29,-14,'checker'],[-3,29,-15,'checker'],[-2,29,-15,'checker'],[-1,29,-16,'checker'],[0,29,-16,'checker'],[1,29,-15,'checker'],[2,29,-15,'checker'],[3,29,-14,'checker'],[4,29,-13,'checker'],[5,29,-11,'checker'],[6,29,-10,'checker'],[-7,30,-10,'checker'],[-6,30,-11,'checker'],[-5,30,-13,'checker'],[-4,30,-14,'checker'],[-3,30,-15,'checker'],[-2,30,-15,'checker'],[-1,30,-16,'checker'],[0,30,-16,'checker'],[1,30,-15,'checker'],[2,30,-15,'checker'],[3,30,-14,'checker'],[4,30,-13,'checker'],[5,30,-11,'checker'],[6,30,-10,'checker'],[-7,31,-10,'checker'],[-6,31,-11,'checker'],[-5,31,-13,'checker'],[-4,31,-14,'checker'],[-3,31,-15,'checker'],[-2,31,-15,'checker'],[-1,31,-16,'checker'],[0,31,-16,'checker'],[1,31,-15,'checker'],[2,31,-15,'checker'],[3,31,-14,'checker'],[4,31,-13,'checker'],[5,31,-11,'checker'],[6,31,-10,'checker'],[-7,32,-10,'checker'],[-6,32,-11,'checker'],[-5,32,-13,'checker'],[-4,32,-14,'checker'],[-3,32,-15,'checker'],[-2,32,-15,'checker'],[-1,32,-16,'checker'],[0,32,-16,'checker'],[1,32,-15,'checker'],[2,32,-15,'checker'],[3,32,-14,'checker'],[4,32,-13,'checker'],[5,32,-11,'checker'],[6,32,-10,'checker'],[-7,33,-10,'checker'],[-6,33,-11,'checker'],[-5,33,-13,'checker'],[-4,33,-14,'checker'],[-3,33,-15,'checker'],[-2,33,-15,'checker'],[-1,33,-16,'checker'],[0,33,-16,'checker'],[1,33,-15,'checker'],[2,33,-15,'checker'],[3,33,-14,'checker'],[4,33,-13,'checker'],[5,33,-11,'checker'],[6,33,-10,'checker'],[-4,34,-16,'checker'],[-4,35,-16,'checker'],[-4,36,-16,'checker'],[-4,37,-16,'checker'],[-4,38,-16,'checker'],[-4,39,-16,'checker'],[-3,34,-16,'checker'],[-3,35,-16,'checker'],[-3,36,-16,'checker'],[-3,37,-16,'checker'],[-3,38,-16,'checker'],[-3,39,-16,'checker'],[-2,34,-16,'checker'],[-2,35,-16,'checker'],[-2,36,-16,'checker'],[-2,37,-16,'checker'],[-2,38,-16,'checker'],[-2,39,-16,'checker'],[-1,34,-16,'checker'],[-1,35,-16,'checker'],[-1,36,-16,'checker'],[-1,37,-16,'checker'],[-1,38,-16,'checker'],[-1,39,-16,'checker'],[0,34,-16,'checker'],[0,35,-16,'checker'],[0,36,-16,'checker'],[0,37,-16,'checker'],[0,38,-16,'checker'],[0,39,-16,'checker'],[1,34,-16,'checker'],[1,35,-16,'checker'],[1,36,-16,'checker'],[1,37,-16,'checker'],[1,38,-16,'checker'],[1,39,-16,'checker'],[2,34,-16,'checker'],[2,35,-16,'checker'],[2,36,-16,'checker'],[2,37,-16,'checker'],[2,38,-16,'checker'],[2,39,-16,'checker'],[3,34,-16,'checker'],[3,35,-16,'checker'],[3,36,-16,'checker'],[3,37,-16,'checker'],[3,38,-16,'checker'],[3,39,-16,'checker'],[-2,36,-16,'wave'],[-1,36,-16,'wave'],[0,36,-16,'wave'],[1,36,-16,'wave'],[-2,38,-16,'conveyor_s'],[-1,38,-16,'conveyor_s'],[0,38,-16,'conveyor_s'],[1,38,-16,'conveyor_s'],[0,40,-16,'chute_in'],[0,41,-16,'checker'],[0,42,-16,'checker'],[0,43,-16,'checker'],[0,44,-16,'checker'],[0,45,-16,'checker'],[0,46,-16,'checker'],[0,47,-16,'checker'],[0,48,-16,'checker'],[0,49,-16,'checker'],[0,50,-16,'checker'],[-4,51,-16,'checker'],[-3,51,-16,'checker'],[-2,51,-16,'checker'],[-1,51,-16,'checker'],[0,51,-16,'checker'],[1,51,-16,'checker'],[2,51,-16,'checker'],[3,51,-16,'checker'],[-4,52,-17,'checker'],[-3,52,-17,'checker'],[-2,52,-17,'checker'],[-1,52,-17,'checker'],[0,52,-17,'checker'],[1,52,-17,'checker'],[2,52,-17,'checker'],[3,52,-17,'checker'],[-4,53,-18,'checker'],[-3,53,-18,'checker'],[-2,53,-18,'checker'],[-1,53,-18,'checker'],[0,53,-18,'checker'],[1,53,-18,'checker'],[2,53,-18,'checker'],[3,53,-18,'checker'],[-4,54,-19,'checker'],[-3,54,-19,'checker'],[-2,54,-19,'checker'],[-1,54,-19,'checker'],[0,54,-19,'checker'],[1,54,-19,'checker'],[2,54,-19,'checker'],[3,54,-19,'checker'],[-4,55,-20,'checker'],[-3,55,-20,'checker'],[-2,55,-20,'checker'],[-1,55,-20,'checker'],[0,55,-20,'checker'],[1,55,-20,'checker'],[2,55,-20,'checker'],[3,55,-20,'checker'],[-7,56,-21,'checker'],[-6,56,-22,'checker'],[-5,56,-24,'checker'],[-4,56,-25,'checker'],[-3,56,-26,'checker'],[-2,56,-26,'checker'],[-1,56,-27,'checker'],[0,56,-27,'checker'],[1,56,-26,'checker'],[2,56,-26,'checker'],[3,56,-25,'checker'],[4,56,-24,'checker'],[5,56,-22,'checker'],[6,56,-21,'checker'],[-7,57,-21,'checker'],[-6,57,-22,'checker'],[-5,57,-24,'checker'],[-4,57,-25,'checker'],[-3,57,-26,'checker'],[-2,57,-26,'checker'],[-1,57,-27,'checker'],[0,57,-27,'checker'],[1,57,-26,'checker'],[2,57,-26,'checker'],[3,57,-25,'checker'],[4,57,-24,'checker'],[5,57,-22,'checker'],[6,57,-21,'checker'],[-7,58,-21,'checker'],[-6,58,-22,'checker'],[-5,58,-24,'checker'],[-4,58,-25,'checker'],[-3,58,-26,'checker'],[-2,58,-26,'checker'],[-1,58,-27,'checker'],[0,58,-27,'checker'],[1,58,-26,'checker'],[2,58,-26,'checker'],[3,58,-25,'checker'],[4,58,-24,'checker'],[5,58,-22,'checker'],[6,58,-21,'checker'],[-7,59,-21,'checker'],[-6,59,-22,'checker'],[-5,59,-24,'checker'],[-4,59,-25,'checker'],[-3,59,-26,'checker'],[-2,59,-26,'checker'],[-1,59,-27,'checker'],[0,59,-27,'checker'],[1,59,-26,'checker'],[2,59,-26,'checker'],[3,59,-25,'checker'],[4,59,-24,'checker'],[5,59,-22,'checker'],[6,59,-21,'checker'],[-7,60,-21,'checker'],[-6,60,-22,'checker'],[-5,60,-24,'checker'],[-4,60,-25,'checker'],[-3,60,-26,'checker'],[-2,60,-26,'checker'],[-1,60,-27,'checker'],[0,60,-27,'checker'],[1,60,-26,'checker'],[2,60,-26,'checker'],[3,60,-25,'checker'],[4,60,-24,'checker'],[5,60,-22,'checker'],[6,60,-21,'checker'],[-7,61,-21,'checker'],[-6,61,-22,'checker'],[-5,61,-24,'checker'],[-4,61,-25,'checker'],[-3,61,-26,'checker'],[-2,61,-26,'checker'],[-1,61,-27,'checker'],[0,61,-27,'checker'],[1,61,-26,'checker'],[2,61,-26,'checker'],[3,61,-25,'checker'],[4,61,-24,'checker'],[5,61,-22,'checker'],[6,61,-21,'checker'],[-7,62,-21,'checker'],[-6,62,-22,'checker'],[-5,62,-24,'checker'],[-4,62,-25,'checker'],[-3,62,-26,'checker'],[-2,62,-26,'checker'],[-1,62,-27,'checker'],[0,62,-27,'checker'],[1,62,-26,'checker'],[2,62,-26,'checker'],[3,62,-25,'checker'],[4,62,-24,'checker'],[5,62,-22,'checker'],[6,62,-21,'checker'],[-7,63,-21,'checker'],[-6,63,-22,'checker'],[-5,63,-24,'checker'],[-4,63,-25,'checker'],[-3,63,-26,'checker'],[-2,63,-26,'checker'],[-1,63,-27,'checker'],[0,63,-27,'checker'],[1,63,-26,'checker'],[2,63,-26,'checker'],[3,63,-25,'checker'],[4,63,-24,'checker'],[5,63,-22,'checker'],[6,63,-21,'checker'],[-7,64,-21,'checker'],[-6,64,-22,'checker'],[-5,64,-24,'checker'],[-4,64,-25,'checker'],[-3,64,-26,'checker'],[-2,64,-26,'checker'],[-1,64,-27,'checker'],[0,64,-27,'checker'],[1,64,-26,'checker'],[2,64,-26,'checker'],[3,64,-25,'checker'],[4,64,-24,'checker'],[5,64,-22,'checker'],[6,64,-21,'checker'],[-7,65,-21,'checker'],[-6,65,-22,'checker'],[-5,65,-24,'checker'],[-4,65,-25,'checker'],[-3,65,-26,'checker'],[-2,65,-26,'checker'],[-1,65,-27,'checker'],[0,65,-27,'checker'],[1,65,-26,'checker'],[2,65,-26,'checker'],[3,65,-25,'checker'],[4,65,-24,'checker'],[5,65,-22,'checker'],[6,65,-21,'checker'],[-7,66,-21,'checker'],[-6,66,-22,'checker'],[-5,66,-24,'checker'],[-4,66,-25,'checker'],[-3,66,-26,'checker'],[-2,66,-26,'checker'],[-1,66,-27,'checker'],[0,66,-27,'checker'],[1,66,-26,'checker'],[2,66,-26,'checker'],[3,66,-25,'checker'],[4,66,-24,'checker'],[5,66,-22,'checker'],[6,66,-21,'checker'],[-7,67,-21,'checker'],[-6,67,-22,'checker'],[-5,67,-24,'checker'],[-4,67,-25,'checker'],[-3,67,-26,'checker'],[-2,67,-26,'checker'],[-1,67,-27,'checker'],[0,67,-27,'checker'],[1,67,-26,'checker'],[2,67,-26,'checker'],[3,67,-25,'checker'],[4,67,-24,'checker'],[5,67,-22,'checker'],[6,67,-21,'checker'],[-7,68,-21,'checker'],[-6,68,-22,'checker'],[-5,68,-24,'checker'],[-4,68,-25,'checker'],[-3,68,-26,'checker'],[-2,68,-26,'checker'],[-1,68,-27,'checker'],[0,68,-27,'checker'],[1,68,-26,'checker'],[2,68,-26,'checker'],[3,68,-25,'checker'],[4,68,-24,'checker'],[5,68,-22,'checker'],[6,68,-21,'checker'],[-7,69,-21,'checker'],[-6,69,-22,'checker'],[-5,69,-24,'checker'],[-4,69,-25,'checker'],[-3,69,-26,'checker'],[-2,69,-26,'checker'],[-1,69,-27,'checker'],[0,69,-27,'checker'],[1,69,-26,'checker'],[2,69,-26,'checker'],[3,69,-25,'checker'],[4,69,-24,'checker'],[5,69,-22,'checker'],[6,69,-21,'checker'],[-7,70,-21,'checker'],[-6,70,-22,'checker'],[-5,70,-24,'checker'],[-4,70,-25,'checker'],[-3,70,-26,'checker'],[-2,70,-26,'checker'],[-1,70,-27,'checker'],[0,70,-27,'checker'],[1,70,-26,'checker'],[2,70,-26,'checker'],[3,70,-25,'checker'],[4,70,-24,'checker'],[5,70,-22,'checker'],[6,70,-21,'checker'],[-7,71,-21,'checker'],[-6,71,-22,'checker'],[-5,71,-24,'checker'],[-4,71,-25,'checker'],[-3,71,-26,'checker'],[-2,71,-26,'checker'],[-1,71,-27,'checker'],[0,71,-27,'checker'],[1,71,-26,'checker'],[2,71,-26,'checker'],[3,71,-25,'checker'],[4,71,-24,'checker'],[5,71,-22,'checker'],[6,71,-21,'checker'],[-7,72,-21,'checker'],[-6,72,-22,'checker'],[-5,72,-24,'checker'],[-4,72,-25,'checker'],[-3,72,-26,'checker'],[-2,72,-26,'checker'],[-1,72,-27,'checker'],[0,72,-27,'checker'],[1,72,-26,'checker'],[2,72,-26,'checker'],[3,72,-25,'checker'],[4,72,-24,'checker'],[5,72,-22,'checker'],[6,72,-21,'checker'],[-7,73,-21,'checker'],[-6,73,-22,'checker'],[-5,73,-24,'checker'],[-4,73,-25,'checker'],[-3,73,-26,'checker'],[-2,73,-26,'checker'],[-1,73,-27,'checker'],[0,73,-27,'checker'],[1,73,-26,'checker'],[2,73,-26,'checker'],[3,73,-25,'checker'],[4,73,-24,'checker'],[5,73,-22,'checker'],[6,73,-21,'checker'],[-4,74,-27,'checker'],[-4,75,-27,'checker'],[-4,76,-27,'checker'],[-4,77,-27,'checker'],[-4,78,-27,'checker'],[-4,79,-27,'checker'],[-3,74,-27,'checker'],[-3,75,-27,'checker'],[-3,76,-27,'checker'],[-3,77,-27,'checker'],[-3,78,-27,'checker'],[-3,79,-27,'checker'],[-2,74,-27,'checker'],[-2,75,-27,'checker'],[-2,76,-27,'checker'],[-2,77,-27,'checker'],[-2,78,-27,'checker'],[-2,79,-27,'checker'],[-1,74,-27,'checker'],[-1,75,-27,'checker'],[-1,76,-27,'checker'],[-1,77,-27,'checker'],[-1,78,-27,'checker'],[-1,79,-27,'checker'],[0,74,-27,'checker'],[0,75,-27,'checker'],[0,76,-27,'checker'],[0,77,-27,'checker'],[0,78,-27,'checker'],[0,79,-27,'checker'],[1,74,-27,'checker'],[1,75,-27,'checker'],[1,76,-27,'checker'],[1,77,-27,'checker'],[1,78,-27,'checker'],[1,79,-27,'checker'],[2,74,-27,'checker'],[2,75,-27,'checker'],[2,76,-27,'checker'],[2,77,-27,'checker'],[2,78,-27,'checker'],[2,79,-27,'checker'],[3,74,-27,'checker'],[3,75,-27,'checker'],[3,76,-27,'checker'],[3,77,-27,'checker'],[3,78,-27,'checker'],[3,79,-27,'checker'],[0,76,-27,'chute_out'],[2,80,-27,'checker'],[2,81,-27,'checker'],[2,82,-27,'checker'],[2,83,-27,'checker'],[2,84,-27,'checker'],[2,85,-27,'checker'],[2,86,-27,'checker'],[2,87,-27,'checker'],[3,80,-27,'checker'],[3,81,-27,'checker'],[3,82,-27,'checker'],[3,83,-27,'checker'],[3,84,-27,'checker'],[3,85,-27,'checker'],[3,86,-27,'checker'],[3,87,-27,'checker'],[-4,88,-27,'checker'],[-3,88,-27,'checker'],[-2,88,-27,'checker'],[-1,88,-27,'checker'],[0,88,-27,'checker'],[1,88,-27,'checker'],[2,88,-27,'checker'],[-4,89,-27,'checker'],[-4,90,-27,'checker'],[-4,91,-27,'checker'],[-4,92,-27,'checker'],[-4,93,-27,'checker'],[-4,94,-27,'checker'],[-4,95,-27,'checker'],[-4,96,-27,'checker'],[-3,89,-27,'checker'],[-3,90,-27,'checker'],[-3,91,-27,'checker'],[-3,92,-27,'checker'],[-3,93,-27,'checker'],[-3,94,-27,'checker'],[-3,95,-27,'checker'],[-3,96,-27,'checker'],[-4,97,-27,'checker'],[-3,97,-27,'checker'],[-2,97,-27,'checker'],[-1,97,-27,'checker'],[0,97,-27,'checker'],[1,97,-27,'checker'],[2,97,-27,'checker'],[3,97,-27,'checker'],[-4,98,-27,'checker'],[-3,98,-27,'checker'],[-2,98,-27,'checker'],[-1,98,-27,'checker'],[0,98,-27,'checker'],[1,98,-27,'checker'],[2,98,-27,'checker'],[3,98,-27,'checker'],[-4,99,-28,'checker'],[-3,99,-28,'checker'],[-2,99,-28,'checker'],[-1,99,-28,'checker'],[0,99,-28,'checker'],[1,99,-28,'checker'],[2,99,-28,'checker'],[3,99,-28,'checker'],[-4,100,-29,'checker'],[-3,100,-29,'checker'],[-2,100,-29,'checker'],[-1,100,-29,'checker'],[0,100,-29,'checker'],[1,100,-29,'checker'],[2,100,-29,'checker'],[3,100,-29,'checker'],[-4,101,-30,'checker'],[-3,101,-30,'checker'],[-2,101,-30,'checker'],[-1,101,-30,'checker'],[0,101,-30,'checker'],[1,101,-30,'checker'],[2,101,-30,'checker'],[3,101,-30,'checker'],[-4,102,-31,'checker'],[-3,102,-31,'checker'],[-2,102,-31,'checker'],[-1,102,-31,'checker'],[0,102,-31,'checker'],[1,102,-31,'checker'],[2,102,-31,'checker'],[3,102,-31,'checker'],[0,103,-32,'checker'],[0,104,-32,'checker'],[0,105,-32,'checker'],[0,106,-32,'checker'],[0,107,-32,'checker'],[0,108,-32,'checker'],[-4,109,-32,'checker'],[-3,109,-32,'checker'],[-2,109,-32,'checker'],[-1,109,-32,'checker'],[0,109,-32,'checker'],[1,109,-32,'checker'],[2,109,-32,'checker'],[3,109,-32,'checker'],[-4,110,-33,'checker'],[-3,110,-33,'checker'],[-2,110,-33,'checker'],[-1,110,-33,'checker'],[0,110,-33,'checker'],[1,110,-33,'checker'],[2,110,-33,'checker'],[3,110,-33,'checker'],[-4,111,-34,'checker'],[-3,111,-34,'checker'],[-2,111,-34,'checker'],[-1,111,-34,'checker'],[0,111,-34,'checker'],[1,111,-34,'checker'],[2,111,-34,'checker'],[3,111,-34,'checker'],[-4,112,-35,'checker'],[-3,112,-35,'checker'],[-2,112,-35,'checker'],[-1,112,-35,'checker'],[0,112,-35,'checker'],[1,112,-35,'checker'],[2,112,-35,'checker'],[3,112,-35,'checker'],[-4,113,-36,'goal'],[-4,114,-36,'goal'],[-4,115,-36,'goal'],[-4,116,-36,'goal'],[-4,117,-36,'goal'],[-3,113,-36,'goal'],[-3,114,-36,'goal'],[-3,115,-36,'goal'],[-3,116,-36,'goal'],[-3,117,-36,'goal'],[-2,113,-36,'goal'],[-2,114,-36,'goal'],[-2,115,-36,'goal'],[-2,116,-36,'goal'],[-2,117,-36,'goal'],[-1,113,-36,'goal'],[-1,114,-36,'goal'],[-1,115,-36,'goal'],[-1,116,-36,'goal'],[-1,117,-36,'goal'],[0,113,-36,'goal'],[0,114,-36,'goal'],[0,115,-36,'goal'],[0,116,-36,'goal'],[0,117,-36,'goal'],[1,113,-36,'goal'],[1,114,-36,'goal'],[1,115,-36,'goal'],[1,116,-36,'goal'],[1,117,-36,'goal'],[2,113,-36,'goal'],[2,114,-36,'goal'],[2,115,-36,'goal'],[2,116,-36,'goal'],[2,117,-36,'goal'],[3,113,-36,'goal'],[3,114,-36,'goal'],[3,115,-36,'goal'],[3,116,-36,'goal'],[3,117,-36,'goal']
+],start:{gx:0,gy:2,gz:0},goal:{gx:0,gy:114,gz:-36},
+chutes:[{inX:0,inY:40,outX:0,outY:74,outZ:-27}],
 enemies:[
-  {type:'bruiser',gx:0,gy:8,gz:-5,path:[{gx:-3,gy:6,gz:-5},{gx:3,gy:6,gz:-5}]},
-  {type:'bruiser',gx:0,gy:25,gz:-15,path:[{gx:-5,gy:16,gz:-15},{gx:4,gy:36,gz:-15}]},
-  {type:'bruiser',gx:0,gy:31,gz:-15,path:[{gx:-5,gy:16,gz:-14},{gx:4,gy:36,gz:-14}]},
-  {type:'skullhead',gx:0,gy:40,gz:-16,path:[{gx:-2,gy:38,gz:-16},{gx:2,gy:44,gz:-16}]},
-  {type:'bruiser',gx:0,gy:48,gz:-16,path:[{gx:0,gy:45,gz:-16},{gx:0,gy:53,gz:-16}]},
-  {type:'bruiser',gx:0,gy:77,gz:-26,path:[{gx:-3,gy:75,gz:-26},{gx:3,gy:81,gz:-26}]},
-  {type:'bruiser',gx:0,gy:91,gz:-31,path:[{gx:-5,gy:83,gz:-31},{gx:4,gy:103,gz:-31}]},
-  {type:'bruiser',gx:0,gy:97,gz:-31,path:[{gx:-5,gy:83,gz:-30},{gx:4,gy:103,gz:-30}]},
-  {type:'bruiser',gx:0,gy:107,gz:-32,path:[{gx:-2,gy:105,gz:-32},{gx:2,gy:111,gz:-32}]},
-  {type:'bruiser',gx:0,gy:115,gz:-32,path:[{gx:0,gy:112,gz:-32},{gx:0,gy:123,gz:-32}]},
-  {type:'bruiser',gx:0,gy:126,gz:-36,path:[{gx:-1,gy:124,gz:-34},{gx:0,gy:132,gz:-39}]},
+  {type:'bruiser',gx:0,gy:9,gz:-5,path:[{gx:-3,gy:7,gz:-5},{gx:3,gy:7,gz:-5}]},
+  {type:'bruiser',gx:0,gy:24,gz:-15,path:[{gx:-6,gy:17,gz:-15},{gx:5,gy:33,gz:-15}]},
+  {type:'bruiser',gx:0,gy:29,gz:-15,path:[{gx:-6,gy:17,gz:-14},{gx:5,gy:33,gz:-14}]},
+  {type:'skullhead',gx:0,gy:37,gz:-16,path:[{gx:-3,gy:35,gz:-16},{gx:3,gy:39,gz:-16}]},
+  {type:'bruiser',gx:0,gy:44,gz:-16,path:[{gx:0,gy:41,gz:-16},{gx:0,gy:50,gz:-16}]},
+  {type:'bruiser',gx:0,gy:66,gz:-26,path:[{gx:-6,gy:57,gz:-26},{gx:5,gy:73,gz:-26}]},
+  {type:'bruiser',gx:0,gy:72,gz:-26,path:[{gx:-6,gy:57,gz:-25},{gx:5,gy:73,gz:-25}]},
+  {type:'bruiser',gx:0,gy:78,gz:-27,path:[{gx:-3,gy:75,gz:-27},{gx:3,gy:79,gz:-27}]},
+  {type:'bruiser',gx:2,gy:83,gz:-27,path:[{gx:2,gy:80,gz:-27},{gx:3,gy:87,gz:-27}]},
+  {type:'bruiser',gx:-3,gy:91,gz:-27,path:[{gx:-4,gy:89,gz:-27},{gx:-3,gy:96,gz:-27}]},
+  {type:'bruiser',gx:0,gy:106,gz:-32,path:[{gx:0,gy:103,gz:-32},{gx:0,gy:108,gz:-32}]},
+  {type:'bruiser',gx:0,gy:111,gz:-34,path:[{gx:-1,gy:109,gz:-33},{gx:0,gy:112,gz:-35}]}
 ]};}
 
-function buildLevel(n){
+function buildLevel(n) {
   const fns=[L1,L2,L3,L4,L5,L6,L7,L8,L9,L10];
-  const d=(fns[n]||L1)();
+  const d=(fns[Math.min(n,9)]||L1)();
   d.tiles=d.tiles.filter(t=>Array.isArray(t)&&t.length>=3&&typeof t[0]==='number');
   return d;
-}
-
-// ── GAME STATE ────────────────────────────────────────────────────────────────
-let state='start',currentLevel=0,lives=3,score=0,levelTime=60,timerInt=null;
-function show(id){document.getElementById(id).style.display='flex';}
-function hide(id){document.getElementById(id).style.display='none';}
-function updateHUD(){
-  document.getElementById('sc').textContent=score;
-  document.getElementById('lv').textContent=currentLevel+1;
-  document.getElementById('tm').textContent=Math.max(0,levelTime);
-  for(let i=0;i<3;i++)document.getElementById('l'+i).className='ld'+(i>=lives?' dead':'');
-  const m=LEVEL_TIMES[currentLevel]||60;
-  document.getElementById('tb').style.width=Math.max(0,levelTime/m*100)+'%';
 }
 
 function loadLevel(n) {
   clearInterval(timerInt);
   const def = buildLevel(n);
-  tileMap = def.tiles;
+  // Strip ramp_ prefix from tile types for physics (keep gz values intact)
+  tileMap = def.tiles.map(t => {
+    if (!t[3]) return t;
+    const raw = t[3];
+    if (raw.startsWith('ramp_')) {
+      const colon = raw.indexOf(':');
+      const base = colon>=0 ? raw.slice(colon+1) : 'normal';
+      return [t[0],t[1],t[2],base];
+    }
+    return t;
+  });
   rebuildTileHeightMap();
   goalPos = def.goal;
   iceLevel = !!def.icePhysics;
@@ -1423,6 +1202,19 @@ function loadLevel(n) {
     levelTime--; updateHUD();
     if(levelTime<=0) triggerDeath('time');
   },1000);
+}
+
+let state='start', currentLevel=0, lives=3, score=0, levelTime=60, timerInt=null;
+
+function show(id){document.getElementById(id).style.display='flex';}
+function hide(id){document.getElementById(id).style.display='none';}
+function updateHUD(){
+  document.getElementById('sc').textContent=score;
+  document.getElementById('lv').textContent=currentLevel+1;
+  document.getElementById('tm').textContent=Math.max(0,Math.ceil(levelTime));
+  for(let i=0;i<3;i++)document.getElementById('l'+i).className='ld'+(i>=lives?' dead':'');
+  const maxT=LEVEL_TIMES[currentLevel]||60;
+  document.getElementById('tb').style.width=Math.max(0,levelTime/maxT*100)+'%';
 }
 
 function showLevelIntro(){
@@ -1524,6 +1316,7 @@ document.getElementById('btn-time').onclick=()=>{hide('ov-time');startLevel();};
 document.getElementById('btn-over').onclick=()=>{hide('ov-over');fullReset();showLevelIntro();};
 document.getElementById('btn-win').onclick=()=>{hide('ov-win');fullReset();showLevelIntro();};
 
+document.getElementById('rot-btn').addEventListener('click', rotateCamera);
 animate();
 </script>
 </body>
